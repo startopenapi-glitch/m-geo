@@ -1,0 +1,47 @@
+[package]
+name = "m-geo"
+version = "0.1.1"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "M- GEO independent product GEO desktop workbench"
+
+[lib]
+name = "m_geo_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "m-geo"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[features]
+default = []
+desktop = ["dep:tauri", "dep:tauri-plugin-single-instance", "dep:rfd", "dep:open"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+hex = "0.4"
+csv = "1.3"
+encoding_rs = "0.8"
+url = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+quick-xml = "0.37"
+aes-gcm = "0.10"
+argon2 = "0.5"
+rand = "0.8"
+tempfile = "3"
+tauri = { version = "2", optional = true, features = [] }
+tauri-plugin-single-instance = { version = "2", optional = true }
+rfd = { version = "0.15", optional = true }
+open = { version = "5", optional = true }

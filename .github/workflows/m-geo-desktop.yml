@@ -1,0 +1,62 @@
+name: M-GEO internal desktop builds
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+          - os: macos-14
+            target: x86_64-apple-darwin
+            bundles: app,dmg
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: apps/m-geo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt,clippy
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm typecheck
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --features desktop --all-targets -- -D warnings
+      - if: runner.os != 'Windows'
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} -- --locked
+      - name: Build and inspect unsigned Windows NSIS package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python ./scripts/test-windows-package.py
+          if ($LASTEXITCODE -ne 0) { throw 'Windows package verifier regression failed' }
+          ./scripts/build-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: M-GEO-unsigned-internal-${{ matrix.target }}
+          path: apps/m-geo/src-tauri/target/${{ matrix.target }}/release/bundle/
+          if-no-files-found: error
+      - name: Preserve Windows static verification evidence
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: M-GEO-Windows-package-evidence
+          path: artifacts/m-geo-*/
+          if-no-files-found: error

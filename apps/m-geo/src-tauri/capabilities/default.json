@@ -1,0 +1,1 @@
+{"identifier":"main-window","description":"Local M- GEO window; all data operations use a native command whitelist.","windows":["main"],"permissions":["core:default"]}
