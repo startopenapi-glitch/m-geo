@@ -1,6 +1,6 @@
 [package]
 name = "m-geo"
-version = "0.1.1"
+version = "0.15.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 description = "M- GEO independent product GEO desktop workbench"
@@ -23,7 +23,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }

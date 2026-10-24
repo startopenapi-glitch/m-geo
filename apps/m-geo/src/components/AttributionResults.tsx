@@ -1,0 +1,23 @@
+import type {ReactNode} from 'react';
+import type {AttributionMetrics,AttributionReport,AttributionSource,Currency,SourceEvidence} from '../attributionTypes';
+export const modeLabel=(mode:'simulated'|'recorded')=>mode==='simulated'?'模拟数据':'记录数据（导入者声明）';
+export const sourceLabel:Record<AttributionSource,string>={doubao:'豆包',yuanbao:'腾讯元宝',qianwen:'通义千问',baidu:'百度',other:'其他',unknown:'未知来源'};
+export const evidenceLabel:Record<SourceEvidence,string>={tagged:'标记声明',referrer:'引荐声明',unknown:'未知证据'};
+export const reasons:Record<string,string>={matched:'匹配访问',missing_session:'缺少会话标识',no_matching_visit:'没有匹配访问',ambiguous_touch:'同刻来源冲突',unknown_source:'最近访问来源未知',cancelled:'已取消'};
+export const money=(minor:number,currency:Currency)=>`${currency} ${(minor/100).toFixed(2)}`;
+const rate=(value:number|null)=>value===null?'不适用（分母为 0）':`${(value*100).toFixed(2)}%`;
+export function metricCells(m:AttributionMetrics,currency:Currency):[string,ReactNode][]{return [
+ ['访问记录',m.visits],['访问会话商品对',m.visitingSessions],['支付订单行',m.paidOrders],['取消订单行',m.cancelledOrders],['已归因订单行',m.attributedOrders],['未知来源订单行',m.unknownOrders],['转化会话商品对',m.convertedSessions],['支付总额',money(m.grossMinor,currency)],['累计退款',money(m.refundMinor,currency)],['净收入',money(m.netMinor,currency)],['已归因净收入',money(m.attributedNetMinor,currency)],['未知来源净收入',money(m.unknownNetMinor,currency)],['会话转化率',rate(m.sessionConversionRate)],['未知订单率',rate(m.unknownOrderRate)],['回溯覆盖',m.lookbackCoverageIncomplete?'回溯覆盖不完整':'所需窗口已覆盖']
+ ]}
+function GroupTable({title,rows,currency}:{title:string;rows:{key:string;label:string;metrics:AttributionMetrics}[];currency:Currency}){return <section aria-label={title}><h3>{title}</h3>{!rows.length?<p className="inline-note">当前区间无记录。</p>:<div className="attribution-table-wrap" tabIndex={0} role="region" aria-label={`${title}可横向滚动表格`}><table className="attribution-table"><thead><tr><th scope="col">分组</th>{metricCells(rows[0].metrics,currency).map(([label])=><th scope="col" key={label}>{label}</th>)}</tr></thead><tbody>{rows.map(row=><tr key={row.key}><th scope="row">{row.label}</th>{metricCells(row.metrics,currency).map(([label,value])=><td key={label}>{value}</td>)}</tr>)}</tbody></table></div>}</section>}
+export default function AttributionResults({report,sourceLabel:provenance}:{report:AttributionReport;sourceLabel:string}){return <section aria-label="归因结果" className="attribution-results">
+ <h3>归因结果 · {modeLabel(report.evidenceMode)}</h3><p className="inline-note">资料来源：{provenance} · 币种：{report.currency} · 区间 [{report.period.from}, {report.period.to}) · 回溯 {report.period.lookbackDays} 天</p>
+ <p className="inline-note">退款统计截至 {report.period.refundAsOf}（UTC，不含）；退款归入原支付订单队列，包含报告结束后的已知退款。</p>
+ <p className="notice">本地归因只使用导入者声明的来源与会话商品匹配；不验证平台引荐，不证明因果销量增量。支付订单行不是客户数或结账次数；全额退款仍保留历史支付转化。会话按（会话标识、SKU）去重，来源与周分组的会话数不可相加。周转化按所选区间内观察到的访问队列计算，收入按支付周计算。尚不支持现金流、利润或 ROI。</p>
+ <section aria-label="汇总指标"><h3>汇总指标</h3><dl className="attribution-metrics">{metricCells(report.summary,report.currency).map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></section>
+ <GroupTable title="按来源" rows={report.bySource.map(m=>({key:m.source,label:sourceLabel[m.source],metrics:m}))} currency={report.currency}/>
+ <GroupTable title="按商品快照" rows={report.byProduct.map(m=>({key:m.sku,label:`${m.name} · ${m.sku}`,metrics:m}))} currency={report.currency}/>
+ <GroupTable title="按 UTC 周一" rows={report.weekly.map(m=>({key:m.weekStart,label:m.weekStart,metrics:m}))} currency={report.currency}/>
+ <details><summary>订单行明细（{report.orders.length}）</summary><div className="attribution-table-wrap" tabIndex={0} role="region" aria-label="订单行明细可横向滚动表格"><table className="attribution-table"><thead><tr>{['订单行','SKU','支付／取消时间（UTC）','状态','原始金额','退款','净收入','来源','来源证据','匹配访问','匹配说明','访问在报告区间内'].map(label=><th scope="col" key={label}>{label}</th>)}</tr></thead><tbody>{report.orders.map(order=><tr key={order.orderId}><th scope="row">{order.orderId}</th><td>{order.sku}</td><td>{order.occurredAt}</td><td>{order.status==='paid'?'已支付':'已取消'}</td><td>{money(order.amountMinor,report.currency)}</td><td>{money(order.refundMinor,report.currency)}</td><td>{money(order.netMinor,report.currency)}</td><td>{sourceLabel[order.source]}</td><td>{evidenceLabel[order.sourceEvidence]}</td><td>{order.visitId??'—'}</td><td>{reasons[order.reason]??order.reason}</td><td>{order.visitInPeriod?'是':'否'}</td></tr>)}</tbody></table></div><p className="inline-note">取消行的原始金额仅作记录，不计入支付与净收入。</p></details>
+ {report.limitations.length>0&&<ul>{report.limitations.map((line,index)=><li key={index}>{line}</li>)}</ul>}
+ </section>}

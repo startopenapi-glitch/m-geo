@@ -1,0 +1,2 @@
+export type FeedRequest={brandId:string;profile:'mgeo-catalog-v1'|'google-merchant-basic-v1';items:{productId:string;expectedRevision:number;draftId:string;expectedDraftRevision:number}[]};
+export interface FeedPackage {manifest:unknown;packageId:string;summary:{selected:number;ready:number;blocked:number};rows:{productId:string;sku:string;localStatus:'ready'|'blocked';issues:{field:string;code:string;message:string}[]}[];externalChecks:string[];files:{path:string;content:string}[]}

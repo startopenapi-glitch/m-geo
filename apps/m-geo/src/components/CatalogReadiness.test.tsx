@@ -1,0 +1,10 @@
+import {act,fireEvent,render,screen} from '@testing-library/react';
+import {afterEach,expect,it} from 'vitest';
+import CatalogReadiness from './CatalogReadiness';
+import {setTestTransport} from '../api';
+import type {WorkspaceSnapshot} from '../types';
+const snapshot=():WorkspaceSnapshot=>({products:[],questions:[],drafts:[],publications:[],observations:[]});
+const report={rows:[{productId:'p',sku:'A',name:'Fictional',revision:1,catalog:{kind:'standalone'},issues:[{field:'catalog:brand',code:'missing',message:'缺少字段'}],freshness:[{field:'commerce:price',validUntil:'2099-01-01',status:'valid'}]}],summary:{products:1,ready:0,blocked:1,expiring:0}};
+afterEach(()=>setTestTransport(undefined));
+it('shows generic field diagnostics and clears obsolete results on snapshot changes',async()=>{setTestTransport((async()=>report) as never);const data=snapshot();const view=render(<CatalogReadiness brandId="b" data={data}/>);fireEvent.click(screen.getByText('检查渠道身份'));await screen.findByText('catalog:brand：缺少字段');expect(screen.getByText(/阻塞 1/)).toBeInTheDocument();view.rerender(<CatalogReadiness brandId="b" data={snapshot()}/>);expect(screen.queryByText('catalog:brand：缺少字段')).toBeNull();});
+it('ignores a result arriving after the brand changes',async()=>{let resolve!:(v:unknown)=>void;setTestTransport((()=>new Promise(r=>resolve=r)) as never);const data=snapshot();const view=render(<CatalogReadiness brandId="old" data={data}/>);fireEvent.click(screen.getByText('检查渠道身份'));view.rerender(<CatalogReadiness brandId="new" data={data}/>);await act(async()=>resolve(report));expect(screen.queryByText('catalog:brand：缺少字段')).toBeNull();});

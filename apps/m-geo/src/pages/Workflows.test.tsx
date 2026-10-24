@@ -2,7 +2,7 @@ import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {afterEach,describe,expect,it,vi} from 'vitest';
 import {setTestTransport} from '../api';
 import type {Brand,Draft,Product,WorkspaceSnapshot} from '../types';
-import Products from './Products';
+import Products,{Questions} from './Products';
 import Content,{DraftEditor} from './Content';
 import Settings from './Settings';
 import Visibility from './Visibility';
@@ -91,4 +91,47 @@ describe('native workflow UI',()=>{
   fireEvent.click(screen.getByRole('button',{name:'保存商品'}));
   await waitFor(()=>expect(saves).toBe(2));
  });
+});
+
+it('recovers a committed draft by refreshing without generating a second draft',async()=>{
+ let generated=0,reads=0;
+ const generatedDraft={...draft,reviewedAt:null};
+ setTestTransport(async <T,>(action:string)=>{
+  if(action==='ai.jobs')return [] as T;
+  if(action==='draft.generateLocal'){generated++;return generatedDraft as T}
+  throw Error(action);
+ });
+ const refresh=async()=>{if(++reads===1)throw Error('临时读取失败')};
+ render(<Content brand={brand} data={{...base,drafts:[generatedDraft]}} refresh={refresh}/>);
+ fireEvent.change(screen.getByLabelText('用于生成的商品'),{target:{value:'p'}});
+ fireEvent.click(screen.getByRole('button',{name:'生成本地草稿'}));
+ expect(await screen.findByRole('alert')).toHaveTextContent('已保存');
+ expect(screen.getByRole('button',{name:'生成本地草稿'})).toBeDisabled();
+ fireEvent.click(screen.getByRole('button',{name:'重新加载资料'}));
+ await screen.findByLabelText('草稿正文');
+ expect(generated).toBe(1);
+ expect(reads).toBe(2);
+ expect(screen.getByRole('button',{name:'生成本地草稿'})).toBeEnabled();
+});
+
+
+it('freezes a committed question until refresh recovers without repeating the write',async()=>{
+ let writes=0,reads=0;
+ setTestTransport(async <T,>(action:string)=>{if(action==='question.save'){writes++;return {} as T}throw Error(action)});
+ render(<Questions {...props} product={product} refresh={async()=>{if(++reads<3)throw Error('暂时无法读取')}}/>);
+ fireEvent.change(screen.getByLabelText('消费者问题'),{target:{value:'已保存的问题'}});
+ fireEvent.change(screen.getByLabelText('问题来源'),{target:{value:'测试客户'}});
+ fireEvent.click(screen.getByRole('button',{name:'保存问题'}));
+ await screen.findByRole('alert');
+ expect(screen.getByLabelText('消费者问题')).toBeDisabled();
+ expect(screen.getByLabelText('问题来源')).toBeDisabled();
+ expect(screen.getByRole('button',{name:'重新加载资料'})).toBeEnabled();
+ fireEvent.click(screen.getByRole('button',{name:'重新加载资料'}));
+ await waitFor(()=>expect(reads).toBe(2));
+ expect(screen.getByLabelText('消费者问题')).toHaveValue('已保存的问题');
+ expect(screen.getByLabelText('消费者问题')).toBeDisabled();
+ fireEvent.click(screen.getByRole('button',{name:'重新加载资料'}));
+ await screen.findByText('问题已保存');
+ expect(screen.getByLabelText('消费者问题')).toBeEnabled();
+ expect(writes).toBe(1);
 });

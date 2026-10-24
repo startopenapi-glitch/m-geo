@@ -1,12 +1,61 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "M- GEO",
-  "version": "0.1.1",
+  "version": "0.15.0",
   "identifier": "com.mantou.mgeo",
-  "build": {"beforeDevCommand":"pnpm dev","devUrl":"http://127.0.0.1:1420","beforeBuildCommand":"pnpm build","frontendDist":"../dist","features":["desktop"]},
-  "app": {
-    "windows": [{"label":"main","title":"M- GEO","width":1280,"height":850,"minWidth":960,"minHeight":640}],
-    "security": {"csp":"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data:; connect-src ipc: http://ipc.localhost; font-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"}
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist",
+    "features": [
+      "desktop"
+    ]
   },
-  "bundle": {"active":true,"targets":["app","dmg","nsis"],"icon":["icons/32x32.png","icons/128x128.png","icons/128x128@2x.png","icons/icon.icns","icons/icon.ico"],"resources":["resources/*"],"copyright":"M- GEO contributors; includes GEOFlow adaptations, see notices.","macOS":{"minimumSystemVersion":"13.0"},"windows":{"nsis":{"displayLanguageSelector":false,"languages":["SimpChinese"],"installMode":"currentUser"}}}
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "M- GEO",
+        "width": 1280,
+        "height": 850,
+        "minWidth": 960,
+        "minHeight": 640
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data:; connect-src ipc: http://ipc.localhost; font-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app",
+      "dmg",
+      "nsis"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "resources/*"
+    ],
+    "copyright": "M- GEO contributors; includes GEOFlow adaptations, see notices.",
+    "macOS": {
+      "minimumSystemVersion": "13.0"
+    },
+    "windows": {
+      "nsis": {
+        "displayLanguageSelector": false,
+        "languages": [
+          "SimpChinese"
+        ],
+        "installMode": "currentUser"
+      }
+    }
+  }
 }

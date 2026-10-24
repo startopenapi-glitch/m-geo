@@ -13,7 +13,7 @@ pub(super) fn validate(c: &Connection) -> Result<()> {
     let total: i64 = c
         .query_row("SELECT count(*) FROM m_core_meta", [], |r| r.get(0))
         .map_err(db_error)?;
-    if version != (1, 1) || total != 1 {
+    if ![(1, 1), (1, 2), (1, 3), (1, 4), (1, 5)].contains(&version) || total != 1 {
         return Err("资料版本不正确".into());
     }
     if c.prepare("PRAGMA foreign_key_check")
@@ -35,6 +35,18 @@ pub(super) fn validate(c: &Connection) -> Result<()> {
         "m_observations",
     ] {
         validate_records(c, table)?;
+    }
+    if version.1 >= 2 {
+        experiments::validate(c)?;
+    }
+    if version.1 >= 3 {
+        attribution::validate_database(c)?;
+    }
+    if version.1 >= 4 {
+        local_jobs::validate_database(c)?;
+    }
+    if version.1 >= 5 {
+        optimization::validate_database(c)?;
     }
     validate_preparations(c)?;
     validate_migration(c)?;
@@ -352,6 +364,9 @@ fn validate_records(c: &Connection, table: &str) -> Result<()> {
                         "accuracy",
                         "citedUrl",
                         "evidenceNote",
+                        "assessment",
+                        "assessmentRevision",
+                        "assessmentHistory",
                     ],
                 )?;
                 exact_guid(&v, "productId", x.as_deref().ok_or("观察商品索引缺失")?)?;
@@ -371,8 +386,13 @@ fn validate_records(c: &Connection, table: &str) -> Result<()> {
                 choice(&v, "accuracy", &["unknown", "correct", "incorrect"])?;
                 web_url(&string(&v, "citedUrl", 2000, false)?, false)?;
                 string(&v, "evidenceNote", 5000, false)?;
-                let mut sample = v.clone();
-                sample.as_object_mut().ok_or("观察格式错误")?.remove("id");
+                if v.get("assessment").is_some()
+                    && experiments::assessment(c, &b, &v, true)? != v["assessment"]
+                {
+                    return Err("样本评估字段不规范".into());
+                }
+                observations::validate_history(c, &b, &v)?;
+                let sample = observations::submission(&v);
                 if z.as_deref() != Some(fingerprint(&sample).as_str()) {
                     return Err("观察去重索引不一致".into());
                 }
@@ -614,6 +634,21 @@ fn validate_audit(c: &Connection) -> Result<()> {
             "draft.review",
             "publication.add",
             "observation.add",
+            "observation.assess",
+            "campaign.create",
+            "attribution.apply",
+            "optimization.create",
+            "optimization.update",
+            "optimization.check",
+            "localJobs.create",
+            "localJobs.resume",
+            "localJobs.pause",
+            "localJobs.step",
+            "localJobs.retry",
+            "localJobs.cancel",
+            "commerce.applyBatch",
+            "pilot.createQuestions",
+            "collection.apply",
             "import.csv",
             "import.cnvp",
             "internal.ai.commit",
@@ -625,13 +660,20 @@ fn validate_audit(c: &Connection) -> Result<()> {
         let b = b.ok_or("审计品牌缺失")?;
         brand(c, &b)?;
         let table = match action.as_str() {
+            "campaign.create" => Some("m_campaigns"),
+            "optimization.create" | "optimization.update" | "optimization.check" => {
+                Some("m_optimization_plans")
+            }
+            "attribution.apply" => Some("m_attribution_datasets"),
+            "localJobs.create" | "localJobs.resume" | "localJobs.pause" | "localJobs.step"
+            | "localJobs.retry" | "localJobs.cancel" => Some("m_local_jobs"),
             "product.save" | "product.confirm" => Some("m_products"),
             "question.save" | "question.confirm" => Some("m_questions"),
             "draft.generateLocal" | "draft.save" | "draft.review" | "internal.ai.commit" => {
                 Some("m_drafts")
             }
             "publication.add" => Some("m_publications"),
-            "observation.add" => Some("m_observations"),
+            "observation.add" | "observation.assess" => Some("m_observations"),
             _ => None,
         };
         if let Some(object) = object {

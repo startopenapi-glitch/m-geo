@@ -500,7 +500,7 @@ fn snapshot_marks_truncation_and_future_schema_refuses_writes() {
     assert_eq!(s["products"].as_array().unwrap().len(), 1000);
     assert_eq!(s["truncated"], true);
     let mut future = Connection::open_in_memory().unwrap();
-    future.execute_batch("CREATE TABLE m_core_meta(id INTEGER PRIMARY KEY,schema_version INTEGER);INSERT INTO m_core_meta VALUES(1,2)").unwrap();
+    future.execute_batch("CREATE TABLE m_core_meta(id INTEGER PRIMARY KEY,schema_version INTEGER);INSERT INTO m_core_meta VALUES(1,6)").unwrap();
     assert!(initialize(&mut future).is_err());
     let count: i64 = future
         .query_row(
@@ -906,4 +906,499 @@ fn database_validation_rejects_noncanonical_stored_enum_values() {
             "accepted noncanonical {case} choice"
         );
     }
+}
+
+#[test]
+fn commerce_structured_facts_reject_invalid_values_and_require_fresh_prices() {
+    let mut c = db();
+    let b = brand(&mut c, "购买档案测试");
+    let p = product(&mut c, &b);
+    for (key, value) in [
+        ("price", "-1"),
+        ("price", "1e9"),
+        ("currency", "人民币"),
+        ("availability", "假库存"),
+        ("purchase", "javascript:alert(1)"),
+        ("image", "http://localhost/a.png"),
+    ] {
+        let mut input = p.clone();
+        input["expectedRevision"] = p["revision"].clone();
+        input["facts"] = json!([{"id":format!("commerce:{key}"),"label":key,"value":value,"source":"虚构测试","visibility":"public","validUntil":null}]);
+        assert!(
+            handle(&mut c, "product.save", input).is_err(),
+            "must reject {key}: {value}"
+        );
+    }
+    let mut input = p.clone();
+    input["expectedRevision"] = p["revision"].clone();
+    input["facts"] = json!([{"id":"commerce:price","label":"价格","value":"19.90","source":"虚构价目表","visibility":"public","validUntil":null}]);
+    let saved = call(&mut c, "product.save", input);
+    assert!(handle(
+        &mut c,
+        "product.confirm",
+        json!({"brandId":b["id"],"id":p["id"],"expectedRevision":saved["revision"]})
+    )
+    .is_err());
+}
+
+fn experiment_fixture(c: &mut Connection, b: &Value, p: &Value) -> Value {
+    let q = call(
+        c,
+        "question.save",
+        json!({"brandId":b["id"],"productId":p["id"],"text":"通勤选哪种水壶？","intent":"selection","origin":"customer","source":"虚构测试问题","branded":false,"confirmed":true}),
+    );
+    call(
+        c,
+        "campaign.create",
+        json!({"brandId":b["id"],"name":"虚构测试批次","questionIds":[q["id"]],"platforms":["doubao","yuanbao"],"modelLabel":"平台未显示","searchMode":"联网","context":"中国大陆；新对话；测试账号","repetitions":3}),
+    )
+}
+#[test]
+fn experiment_freezes_questions_and_rejects_duplicate_cells_or_wrong_conditions() {
+    let mut c = db();
+    let b = brand(&mut c, "实验测试");
+    let p = product(&mut c, &b);
+    let campaign = experiment_fixture(&mut c, &b, &p);
+    let q = &campaign["questions"][0];
+    let input = json!({"brandId":b["id"],"productId":p["id"],"questionId":q["id"],"platform":"doubao","surface":"consumer","phase":"baseline","modelLabel":campaign["modelLabel"],"searchMode":campaign["searchMode"],"testedAt":"2026-10-23T00:00:00Z","answer":"虚构回答推荐该商品","mentioned":true,"accuracy":"correct","citedUrl":"","evidenceNote":"模拟验收","assessment":{"campaignId":campaign["id"],"repetition":1,"context":campaign["context"],"recommendation":"yes","rank":1,"competitors":"虚构竞品"}});
+    let o = call(&mut c, "observation.add", input.clone());
+    assert_eq!(
+        call(&mut c, "observation.add", input.clone())["id"],
+        o["id"]
+    );
+    let mut changed = input.clone();
+    changed["answer"] = json!("另一份回答");
+    assert!(handle(&mut c, "observation.add", changed).is_err());
+    let mut changed = input.clone();
+    changed["assessment"]["repetition"] = json!(4);
+    assert!(handle(&mut c, "observation.add", changed).is_err());
+    let mut changed = input.clone();
+    changed["surface"] = json!("api");
+    assert!(handle(&mut c, "observation.add", changed).is_err());
+    let mut changed = input.clone();
+    changed["mentioned"] = json!(false);
+    assert!(handle(&mut c, "observation.add", changed).is_err());
+    let other = brand(&mut c, "其他实验品牌");
+    let mut changed = input.clone();
+    changed["brandId"] = other["id"].clone();
+    assert!(handle(&mut c, "observation.add", changed).is_err());
+    validate_database(&c).unwrap();
+    call(
+        &mut c,
+        "question.confirm",
+        json!({"brandId":b["id"],"id":q["id"],"confirmed":false}),
+    );
+    assert!(handle(&mut c, "observation.add", input).is_err());
+    validate_database(&c).unwrap();
+}
+#[test]
+fn experiment_rejects_brand_leaking_and_cross_brand_question_plans() {
+    let mut c = db();
+    let b = brand(&mut c, "实验测试");
+    let p = product(&mut c, &b);
+    let q = call(
+        &mut c,
+        "question.save",
+        json!({"brandId":b["id"],"productId":p["id"],"text":"实验测试电水壶值得买吗？","intent":"selection","origin":"customer","source":"测试","branded":false,"confirmed":true}),
+    );
+    assert!(handle(&mut c,"campaign.create",json!({"brandId":b["id"],"name":"实验","questionIds":[q["id"]],"platforms":["doubao"],"modelLabel":"x","searchMode":"x","context":"x","repetitions":3})).is_err());
+}
+
+#[test]
+fn commerce_v1_backup_migrates_without_losing_rows_and_v2_roundtrips() {
+    let mut legacy = db();
+    crate::ai::initialize(&mut legacy).unwrap();
+    let b = brand(&mut legacy, "旧版资料");
+    let p = product(&mut legacy, &b);
+    legacy.execute_batch("DROP TABLE m_optimization_plans; DROP TABLE m_local_jobs; DROP TABLE m_attribution_datasets; DROP TABLE m_campaigns; UPDATE m_core_meta SET schema_version=1; PRAGMA user_version=1;").unwrap();
+    let bytes = crate::backup::encrypt_snapshot(&legacy, "fictional-test-password").unwrap();
+    let mut target = crate::runtime::open_database(std::path::Path::new(":memory:")).unwrap();
+    crate::backup::restore_snapshot(&mut target, &bytes, "fictional-test-password").unwrap();
+    assert_eq!(
+        call(
+            &mut target,
+            "workspace.snapshot",
+            json!({"brandId":b["id"]})
+        )["products"][0],
+        p
+    );
+    let campaign = experiment_fixture(&mut target, &b, &p);
+    let bytes = crate::backup::encrypt_snapshot(&target, "fictional-test-password").unwrap();
+    let mut other = crate::runtime::open_database(std::path::Path::new(":memory:")).unwrap();
+    crate::backup::restore_snapshot(&mut other, &bytes, "fictional-test-password").unwrap();
+    assert_eq!(
+        call(&mut other, "workspace.snapshot", json!({"brandId":b["id"]}))["campaigns"][0],
+        campaign
+    );
+}
+
+#[test]
+fn commerce_site_is_review_gated_private_safe_and_preview_not_publish() {
+    let mut c = db();
+    let b = brand(&mut c, "虚构品牌");
+    let p = product(&mut c, &b);
+    let p = confirm(&mut c, &p);
+    let d = draft(&mut c, &p);
+    let input =
+        json!({"brandId":b["id"],"baseUrl":"","drafts":[{"id":d["id"],"expectedRevision":1}]});
+    assert!(handle(&mut c, "site.prepare", input.clone()).is_err());
+    review(&mut c, &d);
+    let site = call(&mut c, "site.prepare", input.clone());
+    let all = site.to_string();
+    for secret in ["RAW_SECRET", "NOTE_SECRET", "PRIVATE_SECRET"] {
+        assert!(!all.contains(secret))
+    }
+    let files = site["files"].as_array().unwrap();
+    assert!(files.iter().any(|f| f["path"] == "catalog.json"));
+    assert!(files.iter().any(
+        |f| f["path"] == "robots.txt" && f["content"].as_str().unwrap().contains("Disallow: /")
+    ));
+    assert!(!files.iter().any(|f| f["path"] == "sitemap.xml"));
+    let html = files
+        .iter()
+        .find(|f| f["path"].as_str().unwrap().starts_with("products/"))
+        .unwrap()["content"]
+        .as_str()
+        .unwrap();
+    assert!(html.contains("noindex"));
+    assert!(html.contains("<article>"));
+    assert!(html.contains("application/ld+json"));
+    assert!(!html.contains("\"offers\""));
+    let mut live = input.clone();
+    live["baseUrl"] = json!("https://example.com/store/");
+    let site = call(&mut c, "site.prepare", live);
+    let all = site.to_string();
+    assert!(all.contains("sitemap.xml"));
+    assert!(all.contains("canonical"));
+    assert!(!all.contains("noindex"));
+    let mut stale = p.clone();
+    stale["expectedRevision"] = p["revision"].clone();
+    call(&mut c, "product.save", stale);
+    assert!(handle(&mut c, "site.prepare", input).is_err());
+}
+#[test]
+fn commerce_site_escapes_script_delimiters_in_jsonld_and_body() {
+    let mut c = db();
+    let b = brand(&mut c, "虚构品牌");
+    let p = product(&mut c, &b);
+    let mut input = p.clone();
+    input["expectedRevision"] = json!(1);
+    input["name"] = json!("</script><script>alert(1)</script>");
+    let p = call(&mut c, "product.save", input);
+    let p = confirm(&mut c, &p);
+    let d = draft(&mut c, &p);
+    review(&mut c, &d);
+    let site = call(
+        &mut c,
+        "site.prepare",
+        json!({"brandId":b["id"],"baseUrl":"https://example.com/","drafts":[{"id":d["id"],"expectedRevision":1}]}),
+    );
+    for f in site["files"].as_array().unwrap() {
+        if f["path"].as_str().unwrap().ends_with(".html") {
+            assert!(!f["content"].as_str().unwrap().contains("<script>alert"));
+        }
+    }
+}
+
+#[test]
+fn commerce_complete_fixture_loop_with_240_observations_export_and_restore() {
+    let mut c = db();
+    crate::ai::initialize(&mut c).unwrap();
+    c.pragma_update(None, "user_version", 5).unwrap();
+    let b = brand(&mut c, "虚构商品验收（非真实效果）");
+    let mut products = vec![];
+    let mut drafts = vec![];
+    let mut qids = vec![];
+    let queries = [
+        "通勤水杯怎么选？",
+        "小容量水杯适合什么场景？",
+        "办公桌水杯应注意哪些参数？",
+        "随身水杯有哪些使用限制？",
+        "买水杯怎样核对售后政策？",
+        "水杯价格比较要看哪些条件？",
+        "怎样确认杯盖是否方便清洗？",
+        "轻便水杯购买前需要哪些信息？",
+        "如何比较不同水杯的容量？",
+        "选购水杯怎样查看真实参数依据？",
+    ];
+    for n in 0..3 {
+        let mut fs = vec![
+            json!({"id":"spec-capacity","label":"容量","value":format!("{}mL",350+n*100),"source":"虚构参数表，仅验收软件","visibility":"public","validUntil":null}),
+            json!({"id":"private","label":"内部信息","value":"PRIVATE_SECRET","source":"内部","visibility":"private","validUntil":null}),
+        ];
+        for (k, label, value) in [
+            ("price", "价格", "19.90"),
+            ("currency", "币种", "CNY"),
+            ("availability", "库存状态", "InStock"),
+            ("audience", "适用人群", "虚构办公人群"),
+            ("scenario", "使用场景", "虚构通勤场景"),
+            ("limits", "使用限制", "仅作测试，不出售"),
+            ("purchase", "购买链接", "https://example.com/fictional"),
+            ("afterSales", "售后说明", "虚构测试，无真实售后承诺"),
+            ("image", "商品图片", "https://example.com/fictional.png"),
+        ] {
+            fs.push(json!({"id":format!("commerce:{k}"),"label":label,"value":value,"source":"虚构说明书，仅软件验收","visibility":"public","validUntil":if ["price","availability"].contains(&k){json!("2099-01-01")}else{Value::Null}}));
+        }
+        let p = call(
+            &mut c,
+            "product.save",
+            json!({"brandId":b["id"],"name":format!("虚构通勤杯{}（非在售）",n+1),"sku":format!("FICTION-{}",n+1),"category":"水杯","officialUrl":"https://example.com/fictional","sourceText":"RAW_SECRET","privateNotes":"NOTE_SECRET","facts":fs}),
+        );
+        let p = confirm(&mut c, &p);
+        for kind in ["description", "faq", "guide", "comparison"] {
+            let d = call(
+                &mut c,
+                "draft.generateLocal",
+                json!({"brandId":b["id"],"productId":p["id"],"kind":kind}),
+            );
+            review(&mut c, &d);
+            drafts.push(json!({"id":d["id"],"expectedRevision":1}));
+        }
+        products.push(p);
+    }
+    for (n, query) in queries.iter().enumerate() {
+        let q = call(
+            &mut c,
+            "question.save",
+            json!({"brandId":b["id"],"productId":products[n%3]["id"],"text":query,"intent":"selection","origin":"suggestion","source":"虚构验收问题，不代表真实搜索量","branded":false,"confirmed":true}),
+        );
+        qids.push(q["id"].clone());
+    }
+    let campaign = call(
+        &mut c,
+        "campaign.create",
+        json!({"brandId":b["id"],"name":"模拟基线与复测：10题 × 4平台 × 3次","questionIds":qids,"platforms":["doubao","yuanbao","qianwen","baidu"],"modelLabel":"模拟数据，无模型调用","searchMode":"模拟联网状态，未请求平台","context":"虚构验收；非真实平台表现","repetitions":3}),
+    );
+    for phase in ["baseline", "followup"] {
+        for (n, q) in campaign["questions"].as_array().unwrap().iter().enumerate() {
+            for platform in ["doubao", "yuanbao", "qianwen", "baidu"] {
+                for repetition in 1..=3 {
+                    let recommended = (n + repetition) % 3 == 0;
+                    let input = json!({"brandId":b["id"],"productId":q["productId"],"questionId":q["id"],"platform":platform,"surface":"consumer","phase":phase,"modelLabel":campaign["modelLabel"],"searchMode":campaign["searchMode"],"testedAt":"2026-10-23T00:00:00Z","answer":"虚构软件验收回答，并非平台真实回答。","mentioned":recommended,"accuracy":"unknown","citedUrl":"","evidenceNote":"人工构造夹具，未向外部平台提问","assessment":{"campaignId":campaign["id"],"repetition":repetition,"context":campaign["context"],"recommendation":if recommended{"yes"}else{"no"},"rank":if recommended{json!(2)}else{Value::Null},"competitors":"虚构竞品记录"}});
+                    call(&mut c, "observation.add", input);
+                }
+            }
+        }
+    }
+    let snapshot = call(&mut c, "workspace.snapshot", json!({"brandId":b["id"]}));
+    assert_eq!(snapshot["observations"].as_array().unwrap().len(), 240);
+    assert_eq!(snapshot["publications"].as_array().unwrap().len(), 0);
+    let site = call(
+        &mut c,
+        "site.prepare",
+        json!({"brandId":b["id"],"baseUrl":"","drafts":drafts}),
+    );
+    assert_eq!(site["productCount"], 3);
+    let bytes = crate::files::site_zip(&site).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+    use std::io::Read;
+    let mut catalog = String::new();
+    zip.by_name("catalog.json")
+        .unwrap()
+        .read_to_string(&mut catalog)
+        .unwrap();
+    let catalog: Value = serde_json::from_str(&catalog).unwrap();
+    assert_eq!(catalog["products"].as_array().unwrap().len(), 3);
+    assert_eq!(catalog["products"][0]["offer"]["price"], "19.90");
+    assert!(!site.to_string().contains("PRIVATE_SECRET"));
+    let backup = crate::backup::encrypt_snapshot(&c, "fictional-test-password").unwrap();
+    let mut restored = crate::runtime::open_database(std::path::Path::new(":memory:")).unwrap();
+    crate::backup::restore_snapshot(&mut restored, &backup, "fictional-test-password").unwrap();
+    assert_eq!(
+        call(
+            &mut restored,
+            "workspace.snapshot",
+            json!({"brandId":b["id"]})
+        ),
+        snapshot
+    );
+    if let Ok(dir) = std::env::var("MGEO_FIXTURE_OUTPUT") {
+        assert!(dir.contains("mgeo-e2e-"));
+        let dir = std::path::Path::new(&dir);
+        std::fs::create_dir_all(dir).unwrap();
+        let mut db = Connection::open(dir.join("fictional.sqlite3")).unwrap();
+        rusqlite::backup::Backup::new(&c, &mut db)
+            .unwrap()
+            .run_to_completion(128, std::time::Duration::from_millis(1), None)
+            .unwrap();
+        drop(db);
+        let mut reopened = crate::runtime::open_database(&dir.join("fictional.sqlite3")).unwrap();
+        assert_eq!(
+            call(
+                &mut reopened,
+                "workspace.snapshot",
+                json!({"brandId":b["id"]})
+            ),
+            snapshot
+        );
+        std::fs::write(dir.join("fictional-website.zip"), bytes).unwrap();
+        std::fs::write(dir.join("fixture-result.json"),serde_json::to_string_pretty(&json!({"passed":true,"brandId":b["id"],"products":3,"questions":10,"platforms":4,"repetitions":3,"baseline":120,"followup":120,"drafts":12,"publications":0,"modelCalls":0,"realPlatformCalls":0,"backupRestored":true,"reopened":true,"note":"All products and observations are synthetic fixtures, not measured platform results."})).unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn review_fix_padded_fact_ids_cannot_bypass_commerce_validation() {
+    let mut c = db();
+    let b = brand(&mut c, "字段校验");
+    let p = product(&mut c, &b);
+    for (key, value) in [
+        (" commerce:price", "-9"),
+        ("commerce:purchase ", "javascript:alert(1)"),
+    ] {
+        let mut input = p.clone();
+        input["expectedRevision"] = json!(1);
+        input["facts"] = json!([{"id":key,"label":"测试","value":value,"source":"虚构","visibility":"public","validUntil":"2099-01-01"}]);
+        assert!(handle(&mut c, "product.save", input).is_err());
+    }
+}
+#[test]
+fn review_fix_multibyte_campaign_never_breaks_backup() {
+    let mut c = db();
+    crate::ai::initialize(&mut c).unwrap();
+    c.pragma_update(None, "user_version", 5).unwrap();
+    let b = brand(&mut c, "长问题测试");
+    let p = product(&mut c, &b);
+    let mut ids = vec![];
+    for n in 0..100 {
+        let q = call(
+            &mut c,
+            "question.save",
+            json!({"brandId":b["id"],"productId":p["id"],"text":format!("{}选择条件{n}","选".repeat(970)),"intent":"selection","origin":"suggestion","source":"测试","branded":false,"confirmed":true}),
+        );
+        ids.push(q["id"].clone());
+    }
+    let result = handle(
+        &mut c,
+        "campaign.create",
+        json!({"brandId":b["id"],"name":"大计划","questionIds":ids,"platforms":["doubao"],"modelLabel":"测试","searchMode":"测试","context":"测试","repetitions":1}),
+    );
+    if result.is_err() {
+        assert_eq!(
+            call(&mut c, "workspace.snapshot", json!({"brandId":b["id"]}))["campaigns"],
+            json!([])
+        );
+    }
+    assert!(crate::backup::encrypt_snapshot(&c, "fictional-test-password").is_ok());
+}
+#[test]
+fn review_fix_annotations_can_change_without_changing_raw_evidence_or_submission_dedup() {
+    let mut c = db();
+    let b = brand(&mut c, "补评测试");
+    let p = product(&mut c, &b);
+    let plan = experiment_fixture(&mut c, &b, &p);
+    let q = &plan["questions"][0];
+    let input = json!({"brandId":b["id"],"productId":p["id"],"questionId":q["id"],"platform":"doubao","surface":"consumer","phase":"baseline","modelLabel":plan["modelLabel"],"searchMode":plan["searchMode"],"testedAt":"2026-10-23T00:00:00Z","answer":"虚构推荐回答，原文固定","mentioned":false,"accuracy":"unknown","citedUrl":"","evidenceNote":"待核对","assessment":{"campaignId":plan["id"],"repetition":1,"context":plan["context"],"recommendation":"unknown","rank":null,"competitors":""}});
+    let o = call(&mut c, "observation.add", input.clone());
+    let edit = json!({"brandId":b["id"],"id":o["id"],"expectedRevision":1,"mentioned":true,"accuracy":"correct","citedUrl":"https://example.com/source","evidenceNote":"人工核对虚构夹具","recommendation":"yes","rank":2,"competitors":"虚构竞品"});
+    let updated = call(&mut c, "observation.assess", edit.clone());
+    assert_eq!(updated["assessmentRevision"], 2);
+    assert_eq!(
+        updated["assessmentHistory"][0]["assessment"]["recommendation"],
+        "unknown"
+    );
+    for key in [
+        "answer",
+        "querySnapshot",
+        "testedAt",
+        "productId",
+        "questionId",
+        "platform",
+        "surface",
+        "phase",
+        "modelLabel",
+        "searchMode",
+    ] {
+        assert_eq!(updated[key], o[key]);
+    }
+    assert_eq!(updated["assessment"]["campaignId"], plan["id"]);
+    assert!(handle(&mut c, "observation.assess", edit.clone()).is_err());
+    assert_eq!(call(&mut c, "observation.add", input)["id"], o["id"]);
+    validate_database(&c).unwrap();
+    let mut second = edit.clone();
+    second["expectedRevision"] = json!(2);
+    second["rank"] = json!(3);
+    let second = call(&mut c, "observation.assess", second);
+    assert_eq!(second["assessmentRevision"], 3);
+    assert_eq!(second["assessmentHistory"].as_array().unwrap().len(), 2);
+    validate_database(&c).unwrap();
+    crate::ai::initialize(&mut c).unwrap();
+    c.pragma_update(None, "user_version", 5).unwrap();
+    let bytes = crate::backup::encrypt_snapshot(&c, "fictional-test-password").unwrap();
+    let mut restored = crate::runtime::open_database(std::path::Path::new(":memory:")).unwrap();
+    crate::backup::restore_snapshot(&mut restored, &bytes, "fictional-test-password").unwrap();
+    assert_eq!(
+        call(
+            &mut restored,
+            "workspace.snapshot",
+            json!({"brandId":b["id"]})
+        )["observations"][0],
+        second
+    );
+    let other = brand(&mut c, "另一个补评品牌");
+    let mut edit = edit;
+    edit["brandId"] = other["id"].clone();
+    edit["expectedRevision"] = json!(2);
+    assert!(handle(&mut c, "observation.assess", edit).is_err());
+}
+
+#[test]
+fn phase3_evidence_mode_survives_backup_and_reports_without_reclassifying_history() {
+    let mut c = db();
+    let b = brand(&mut c, "第三阶段虚构模式验收");
+    let p = product(&mut c, &b);
+    let historical = experiment_fixture(&mut c, &b, &p);
+    assert_eq!(historical["evidenceMode"], "unspecified");
+    let mut input = json!({"brandId":b["id"],"name":"虚构模拟批次","questionIds":[historical["questions"][0]["id"]],"platforms":["doubao"],"modelLabel":"模拟","searchMode":"不联网","context":"虚构工作流验收","repetitions":1,"evidenceMode":"simulated"});
+    let simulated = call(&mut c, "campaign.create", input.clone());
+    assert_eq!(simulated["evidenceMode"], "simulated");
+    input["evidenceMode"] = json!("verified");
+    assert!(handle(&mut c, "campaign.create", input).is_err());
+    let report = call(
+        &mut c,
+        "campaign.report",
+        json!({"brandId":b["id"],"campaignId":simulated["id"]}),
+    );
+    assert_eq!(report["summary"]["evidenceMode"], "simulated");
+    assert!(report["files"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("模拟样本"));
+    let mut old = historical.clone();
+    old.as_object_mut().unwrap().remove("evidenceMode");
+    update(&c, "m_campaigns", &old).unwrap();
+    let legacy_report = call(
+        &mut c,
+        "campaign.report",
+        json!({"brandId":b["id"],"campaignId":historical["id"]}),
+    );
+    assert_eq!(legacy_report["summary"]["evidenceMode"], "unspecified");
+    validate_database(&c).unwrap();
+    let mut restored = db();
+    rusqlite::backup::Backup::new(&c, &mut restored)
+        .unwrap()
+        .run_to_completion(16, std::time::Duration::ZERO, None)
+        .unwrap();
+    validate_database(&restored).unwrap();
+    let snap = call(
+        &mut restored,
+        "workspace.snapshot",
+        json!({"brandId":b["id"]}),
+    );
+    assert_eq!(
+        snap["campaigns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["id"] == simulated["id"])
+            .unwrap()["evidenceMode"],
+        "simulated"
+    );
+    assert!(snap["campaigns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["id"] == old["id"])
+        .unwrap()
+        .get("evidenceMode")
+        .is_none());
 }

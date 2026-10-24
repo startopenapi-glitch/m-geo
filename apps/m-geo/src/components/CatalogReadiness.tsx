@@ -1,0 +1,10 @@
+import {useEffect,useRef,useState} from 'react';
+import {call} from '../api';
+import type {WorkspaceSnapshot} from '../types';
+type Report={rows:{productId:string;sku:string;name:string;revision:number;catalog:Record<string,string>;issues:{field:string;code:string;message:string}[];freshness:{field:string;validUntil:string|null;status:string}[]}[];summary:{products:number;ready:number;blocked:number;expiring:number}};
+export default function CatalogReadiness({brandId,data}:{brandId:string;data:WorkspaceSnapshot}){
+ const [report,setReport]=useState<Report|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);const generation=useRef(0);
+ useEffect(()=>{generation.current++;setReport(null);setError('');setBusy(false);return()=>{generation.current++}},[brandId,data]);
+ async function inspect(){const version=++generation.current;setBusy(true);setReport(null);setError('');try{const result=await call<Report>('catalog.inspect',{brandId});if(version===generation.current)setReport(result);}catch{if(version===generation.current)setError('渠道身份检查失败，请刷新资料后重试。');}finally{if(version===generation.current)setBusy(false);}}
+ return <details className="panel"><summary>渠道身份与有效期检查</summary><p>检查当前品牌全部商品及同组变体。结果只说明本机资料完整性，未提交平台，也不证明商家资格或编号真实分配。</p><button disabled={busy||data.truncated} onClick={()=>void inspect()}>{busy?'正在检查…':'检查渠道身份'}</button>{data.truncated&&<p role="alert">当前资料列表不完整，不能以截断结果判断渠道就绪。</p>}{error&&<p role="alert">{error}</p>}{report&&<><p>商品 {report.summary.products} · 就绪 {report.summary.ready} · 阻塞 {report.summary.blocked} · 七日内到期 {report.summary.expiring}</p>{report.rows.map(row=><div className="fact-card" key={row.productId}><strong>{row.sku} · {row.name} · 版本 {row.revision}</strong>{row.issues.length===0&&<p>身份与价格库存有效期已通过本机检查</p>}{row.issues.map((issue,i)=><p key={`${issue.field}-${i}`}>{issue.field}：{issue.message}</p>)}{row.freshness.filter(f=>f.status==='expiring').map(f=><p key={f.field}>{f.field}：{f.validUntil} 到期，请及时更新</p>)}</div>)}</>}</details>
+}
