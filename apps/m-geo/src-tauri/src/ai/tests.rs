@@ -679,3 +679,147 @@ async fn connection_test_succeeds_when_complete_configuration_is_unchanged() {
     assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
     assert!(!response.to_string().contains("fake-secret"));
 }
+
+#[tokio::test]
+async fn complete_mock_model_workflow_survives_backup_restore_and_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("flow.sqlite3");
+    let db = Arc::new(Mutex::new(crate::runtime::open_database(&path).unwrap()));
+    let keys = Arc::new(MemoryKeys::default());
+    let transport = Arc::new(FakeTransport {
+        delay: Duration::ZERO,
+        answer: Ok("测试商品容量为 500mL。依据：虚构规格表。仅用于软件验收。".into()),
+        calls: AtomicUsize::new(0),
+    });
+    let services = Services {
+        keys,
+        transport: transport.clone(),
+    };
+    let call = |action: &str, payload: Value| {
+        crate::runtime::core_dispatch(&mut db.lock().unwrap(), action, payload).unwrap()
+    };
+    let brand = call("brand.create", json!({"name":"全流程隔离品牌"}));
+    let b = brand["id"].as_str().unwrap();
+    let product = call(
+        "product.save",
+        json!({
+            "brandId":b,"name":"测试保温杯","sku":"AUDIT-001","category":"家居",
+            "sourceText":"仅本机原始资料哨兵","privateNotes":"仅本机备注哨兵",
+            "facts":[
+                {"id":"capacity","label":"容量","value":"500mL","source":"虚构规格表","visibility":"public","validUntil":null},
+                {"id":"cost","label":"成本","value":"内部成本哨兵","source":"内部资料","visibility":"private","validUntil":null}
+            ]
+        }),
+    );
+    call(
+        "product.confirm",
+        json!({"brandId":b,"id":product["id"],"expectedRevision":1}),
+    );
+    let q = call(
+        "question.save",
+        json!({"brandId":b,"productId":product["id"],"text":"全流程隔离品牌杯子的容量是多少？","intent":"selection","origin":"customer","source":"虚构问题，仅用于软件验收","branded":true,"confirmed":true}),
+    );
+    handle_with(
+        db.clone(),
+        "ai.settings.save",
+        json!({"baseUrl":"https://model.example/v1","model":"mock-text","apiKey":"fake-secret"}),
+        services.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(transport.calls.load(Ordering::SeqCst), 0);
+    handle_with(
+        db.clone(),
+        "ai.test",
+        json!({"consent":true}),
+        services.clone(),
+    )
+    .await
+    .unwrap();
+    let job = handle_with(db.clone(), "ai.start", json!({"brandId":b,"productId":product["id"],"kind":"faq","questionId":q["id"],"consent":true}), services.clone()).await.unwrap();
+    let job = wait_job(db.clone(), &services, b, job["id"].as_str().unwrap()).await;
+    assert_eq!(job["status"], "succeeded");
+    assert_eq!(transport.calls.load(Ordering::SeqCst), 2);
+    let snapshot = call("workspace.snapshot", json!({"brandId":b}));
+    let draft = &snapshot["drafts"][0];
+    assert_eq!(draft["generationMode"], "ai");
+    assert!(draft["reviewedAt"].is_null());
+    call(
+        "draft.review",
+        json!({"brandId":b,"id":draft["id"],"expectedRevision":1}),
+    );
+    for format in ["markdown", "html"] {
+        let exported = call(
+            "draft.export",
+            json!({"brandId":b,"id":draft["id"],"expectedRevision":1,"format":format}),
+        );
+        let content = exported["content"].as_str().unwrap();
+        assert!(content.contains("500mL"));
+        for secret in ["fake-secret", "原始资料哨兵", "备注哨兵", "内部成本哨兵"] {
+            assert!(!content.contains(secret));
+        }
+    }
+    let publication = json!({"brandId":b,"draftId":draft["id"],"expectedRevision":1,"channel":"隔离测试登记","url":"https://example.com/mgeo-audit","publishedAt":"2026-10-23T05:00:00Z","note":"没有实际发布"});
+    let first = call("publication.add", publication.clone());
+    assert_eq!(call("publication.add", publication)["id"], first["id"]);
+    for platform in ["doubao", "yuanbao", "qianwen", "baidu"] {
+        for phase in ["baseline", "followup"] {
+            let observation = json!({"brandId":b,"productId":product["id"],"questionId":q["id"],"platform":platform,"surface":"consumer","phase":phase,"modelLabel":"模拟回答夹具","searchMode":"未联网","testedAt":if phase=="baseline"{"2026-10-23T05:00:00Z"}else{"2026-10-23T05:01:00Z"},"answer":"模拟回答：500mL，不代表真实平台表现。","mentioned":true,"accuracy":"correct","citedUrl":"","evidenceNote":"隔离软件验收"});
+            let saved = call("observation.add", observation.clone());
+            assert_eq!(call("observation.add", observation)["id"], saved["id"]);
+        }
+    }
+    let before = call("workspace.snapshot", json!({"brandId":b}));
+    assert_eq!(before["products"].as_array().unwrap().len(), 1);
+    assert_eq!(before["drafts"].as_array().unwrap().len(), 1);
+    assert_eq!(before["publications"].as_array().unwrap().len(), 1);
+    assert_eq!(before["observations"].as_array().unwrap().len(), 8);
+    let password = "Mgeo-audit-test-only-2026";
+    let bytes = crate::backup::encrypt_snapshot(&db.lock().unwrap(), password).unwrap();
+    call("brand.create", json!({"name":"恢复前快照标记"}));
+    let recovery = crate::backup::restore_workspace(
+        &mut db.lock().unwrap(),
+        &bytes,
+        password,
+        &dir.path().join("recovery"),
+    )
+    .unwrap();
+    assert!(recovery.is_file());
+    assert_eq!(call("brand.list", json!({})).as_array().unwrap().len(), 1);
+    assert_eq!(call("workspace.snapshot", json!({"brandId":b})), before);
+    assert_eq!(
+        handle_with(db.clone(), "ai.settings.get", json!({}), services.clone())
+            .await
+            .unwrap()["hasKey"],
+        false
+    );
+    assert!(
+        handle_with(db.clone(), "ai.jobs", json!({"brandId":b}), services)
+            .await
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let mut reopened = crate::runtime::open_database(&path).unwrap();
+    assert_eq!(
+        crate::runtime::core_dispatch(&mut reopened, "workspace.snapshot", json!({"brandId":b}))
+            .unwrap(),
+        before
+    );
+    crate::backup::restore_workspace(
+        &mut reopened,
+        &std::fs::read(recovery).unwrap(),
+        password,
+        &dir.path().join("rollback"),
+    )
+    .unwrap();
+    assert_eq!(
+        crate::runtime::core_dispatch(&mut reopened, "brand.list", json!({}))
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}

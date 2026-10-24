@@ -1,0 +1,8 @@
+import {observationMode,evidenceCounts} from '../evidence';
+import type {PageProps} from '../App';
+import {buyingGaps} from '../commerce';
+import {Panel,Badge} from './ui';
+export default function CommerceDashboard({data}:Pick<PageProps,'data'>){
+ const counts=evidenceCounts(data.observations,data.campaigns);const consumer=data.observations.filter(o=>o.surface==='consumer'&&observationMode(o,data.campaigns)==='recorded');const missing=data.questions.filter(q=>q.confirmed&&!q.branded&&!consumer.some(o=>o.questionId===q.id));
+ return <Panel title="电商商品 AI 推荐进展" description="购买推荐、回答引用与公开发布分别核对。仅明确标记为人工实测的消费者端记录计入推荐证据。"><p>人工实测记录 {counts.recorded} 条 · 模拟样本 {counts.simulated} 条 · 历史性质未分类 {counts.unspecified} 条。模拟和未分类记录不计入下方推荐证据。</p><p>已确认但尚无消费者端样本的问题：<strong>{missing.length}</strong> 个；固定测试计划：<strong>{data.campaigns?.length||0}</strong> 组。</p>{!data.products.length?<p>先添加商品与有依据的购买资料。</p>:data.products.map(p=>{const rows=consumer.filter(o=>o.productId===p.id),gaps=buyingGaps(p),yes=rows.filter(o=>o.assessment?.recommendation==='yes'),errors=rows.filter(o=>o.accuracy==='incorrect');return <div className="cohort" key={p.id}><div className="row-between"><strong>{p.name}</strong><Badge tone={yes.length?'green':'neutral'}>{yes.length?'已有购买推荐证据':rows.length?(rows.every(o=>o.assessment?.recommendation==='no')?'已核对，暂无购买推荐':'已有样本，待核对推荐'):'消费者端未测'}</Badge></div><p>购买资料：{gaps.length?`待补 ${gaps.join('、')}`:'字段齐备，请保持更新'}。</p><p>历史推荐证据 {yes.length} 条 · 引用证据 {rows.filter(o=>o.citedUrl).length} 条 · 错误事实 {errors.length} 条。</p><small>下一步：{gaps.length?'补齐有依据的购买资料':!p.confirmedAt?'确认商品事实':!rows.length?'建立固定问题基线':errors.length?'核对错误事实并修订公开内容':'按同条件完成复测，查看各组推荐与引用变化'}。</small></div>})}</Panel>
+}

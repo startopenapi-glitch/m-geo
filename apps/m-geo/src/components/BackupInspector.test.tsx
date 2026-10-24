@@ -1,0 +1,34 @@
+import {fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {beforeEach,expect,it,vi} from 'vitest';
+import BackupInspector from './BackupInspector';
+import {call} from '../api';
+vi.mock('../api',()=>({call:vi.fn()}));
+const invoke=vi.mocked(call);
+beforeEach(()=>{invoke.mockReset()});
+it('inspects a backup without restoring and clears its password before the picker returns',async()=>{
+ let finish!:(v:unknown)=>void;invoke.mockImplementation(()=>new Promise(resolve=>{finish=resolve}) as never);
+ render(<BackupInspector/>);
+ fireEvent.change(screen.getByLabelText('校验备份口令'),{target:{value:'fictional-passphrase'}});
+ fireEvent.click(screen.getByRole('button',{name:'选择备份并只读校验'}));
+ expect(invoke).toHaveBeenCalledWith('backup.inspect',{password:'fictional-passphrase'});
+ expect(screen.getByLabelText('校验备份口令')).toHaveValue('');
+ finish({valid:true,sourceVersion:3,targetVersion:5,counts:{brands:1,products:3,datasets:2,localJobs:1,optimizationPlans:2},workspaceUnchanged:true});
+ await screen.findByText('备份校验通过');
+ expect(screen.getByText(/优化计划 2/)).toBeInTheDocument();
+ expect(screen.getByText(/源版本 3 → 当前版本 5/)).toBeInTheDocument();
+ expect(screen.getByText('当前工作区未替换。通过校验说明此备份可被当前版本读取，不代表已经恢复。')).toBeInTheDocument();
+ expect(invoke).toHaveBeenCalledTimes(1);
+});
+it('shows cancellation and authentication errors without restoring or keeping the password',async()=>{
+ invoke.mockResolvedValueOnce(null);
+ render(<BackupInspector/>);
+ const input=screen.getByLabelText('校验备份口令');
+ fireEvent.change(input,{target:{value:'fictional-passphrase'}});fireEvent.click(screen.getByRole('button',{name:'选择备份并只读校验'}));
+ await screen.findByText('已取消校验，当前工作区未替换');expect(input).toHaveValue('');
+ invoke.mockRejectedValueOnce(new Error('口令不正确，或备份文件已损坏'));
+ fireEvent.change(input,{target:{value:'wrong-password'}});fireEvent.click(screen.getByRole('button',{name:'选择备份并只读校验'}));
+ await screen.findByText('口令不正确，或备份文件已损坏');
+ expect(input).toHaveValue('');expect(screen.queryByText('备份校验通过')).not.toBeInTheDocument();
+ expect(invoke.mock.calls.every(([a])=>a==='backup.inspect')).toBe(true);
+ await waitFor(()=>expect(screen.getByRole('button',{name:'选择备份并只读校验'})).toBeDisabled());
+});

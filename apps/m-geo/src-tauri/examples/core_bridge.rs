@@ -22,7 +22,7 @@ async fn main() {
         let result = match action {
             "ai.settings.get" | "ai.jobs" => ai::handle(db.clone(), action, payload).await,
             "app.info" => Ok(
-                json!({"name":"M- GEO","version":"0.1.0-test","dataLocation":path,"platform":"browser+native-rust-test","releaseChannel":"internal","updateUrl":null}),
+                json!({"name":"M- GEO","version":env!("CARGO_PKG_VERSION"),"dataLocation":path,"platform":"browser+native-rust-test","releaseChannel":"test","updateUrl":"https://github.com/startopenapi-glitch/m-geo/releases"}),
             ),
             _ => runtime::core_dispatch(&mut db.lock().unwrap(), action, payload),
         };

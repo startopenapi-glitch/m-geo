@@ -30,13 +30,45 @@ fn schema(db: &Connection) -> Result<Vec<(String, String, String)>, String> {
         .map_err(error)?;
     Ok(result)
 }
+// Compare against code-owned shapes, never a possibly damaged destination database.
+pub(crate) fn validate_schema_version(db: &Connection, version: i64) -> Result<(), String> {
+    let marker: i64 = db
+        .query_row(
+            "SELECT schema_version FROM m_core_meta WHERE id=1",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(error)?;
+    let user: i64 = db
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .map_err(error)?;
+    if ![1, 2, 3, 4, 5].contains(&version) || marker != version || user != version {
+        return Err("资料版本标记不一致，请使用原版本恢复".into());
+    }
+    let mut reference = Connection::open_in_memory().map_err(error)?;
+    crate::core::initialize(&mut reference)?;
+    crate::ai::initialize(&mut reference)?;
+    let expected: Vec<_> = schema(&reference)?
+        .into_iter()
+        .filter(|(_, name, _)| {
+            !(version < 5 && name == "m_optimization_plans"
+                || version < 4 && name == "m_local_jobs"
+                || version < 3 && name == "m_attribution_datasets"
+                || version < 2 && name == "m_campaigns")
+        })
+        .collect();
+    if schema(db)? != expected {
+        return Err("备份结构与此版本不一致，请使用原版本恢复".into());
+    }
+    Ok(())
+}
 fn validate_storage(db: &Connection) -> Result<(), String> {
     db.pragma_update(None, "trusted_schema", false)
         .map_err(error)?;
     let version: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .map_err(error)?;
-    if version != 1 {
+    if ![1, 2, 3, 4, 5].contains(&version) {
         return Err("数据格式版本不兼容，请使用对应版本的 M- GEO".into());
     }
     let integrity: String = db
@@ -123,14 +155,11 @@ fn encrypt_recovery_snapshot(db: &Connection, password: &str) -> Result<Vec<u8>,
 }
 struct PreparedRestore {
     source: Connection,
+    source_version: i64,
     // Drop the open SQLite connection before unlinking its private file (Windows included).
     _file: tempfile::NamedTempFile,
 }
-fn prepare_restore(
-    db: &Connection,
-    data: &[u8],
-    password: &str,
-) -> Result<PreparedRestore, String> {
+fn prepare_restore(data: &[u8], password: &str) -> Result<PreparedRestore, String> {
     if data.len() < 52 || data.len() > MAX + 52 || &data[..8] != MAGIC {
         return Err("不是有效的 M- GEO 加密备份，或文件过大".into());
     }
@@ -149,11 +178,21 @@ fn prepare_restore(
     let mut file = tempfile::NamedTempFile::new().map_err(error)?;
     file.write_all(&decoded).map_err(error)?;
     file.flush().map_err(error)?;
-    let source = Connection::open(file.path()).map_err(error)?;
+    let mut source = Connection::open(file.path()).map_err(error)?;
     validate(&source)?;
-    if schema(&source)? != schema(db)? {
-        return Err("备份结构与此版本不一致，请使用原版本恢复".into());
-    }
+    let version: i64 = source
+        .query_row(
+            "SELECT schema_version FROM m_core_meta WHERE id=1",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(error)?;
+    validate_schema_version(&source, version)?;
+    crate::core::validate_database(&source)?;
+    crate::core::initialize(&mut source)?;
+    source
+        .pragma_update(None, "user_version", 5)
+        .map_err(error)?;
     crate::core::validate_database(&source)?;
     for table in ["ai_settings", "ai_jobs", "m_ai_preparations"] {
         let count: i64 = source
@@ -165,6 +204,7 @@ fn prepare_restore(
     }
     Ok(PreparedRestore {
         source,
+        source_version: version,
         _file: file,
     })
 }
@@ -175,8 +215,28 @@ fn apply_restore(db: &mut Connection, prepared: &PreparedRestore) -> Result<(), 
         .run_to_completion(128, Duration::from_millis(1), None)
         .map_err(error)
 }
+pub fn inspect_snapshot(data: &[u8], password: &str) -> Result<serde_json::Value, String> {
+    let prepared = prepare_restore(data, password)?;
+    let mut counts = serde_json::Map::new();
+    for (key, table) in [
+        ("brands", "m_brands"),
+        ("products", "m_products"),
+        ("datasets", "m_attribution_datasets"),
+        ("localJobs", "m_local_jobs"),
+        ("optimizationPlans", "m_optimization_plans"),
+    ] {
+        let count: i64 = prepared
+            .source
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .map_err(error)?;
+        counts.insert(key.into(), serde_json::json!(count));
+    }
+    Ok(
+        serde_json::json!({"valid":true,"sourceVersion":prepared.source_version,"targetVersion":5,"counts":counts,"workspaceUnchanged":true}),
+    )
+}
 pub fn restore_snapshot(db: &mut Connection, data: &[u8], password: &str) -> Result<(), String> {
-    let prepared = prepare_restore(db, data, password)?;
+    let prepared = prepare_restore(data, password)?;
     apply_restore(db, &prepared)
 }
 pub fn restore_workspace(
@@ -187,7 +247,7 @@ pub fn restore_workspace(
 ) -> Result<std::path::PathBuf, String> {
     crate::runtime::no_active_jobs(db)?;
     // Reject a wrong password or invalid candidate before writing any recovery file.
-    let mut prepared = prepare_restore(db, data, password)?;
+    let mut prepared = prepare_restore(data, password)?;
     // No fallible database mutation after the destination replacement has committed.
     crate::ai::initialize(&mut prepared.source)?;
     let safety = encrypt_recovery_snapshot(db, password)?;
@@ -209,9 +269,38 @@ pub fn restore_workspace(
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn phase6_backup_inspection_validates_without_live_mutation() {
+        let current = sample();
+        let bytes = encrypt_snapshot(&current, "my-safe-passphrase").unwrap();
+        let version: i64 = current
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        let before = sample_value(&current);
+        let result = inspect_snapshot(&bytes, "my-safe-passphrase").unwrap();
+        assert_eq!(result["valid"], true);
+        assert_eq!(result["sourceVersion"], version);
+        assert_eq!(result["targetVersion"], 5);
+        assert_eq!(result["counts"]["brands"], 1);
+        assert_eq!(result["counts"]["localJobs"], 0);
+        assert_eq!(result["workspaceUnchanged"], true);
+        assert!(inspect_snapshot(&bytes, "wrong-password").is_err());
+        let mut corrupt = bytes;
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 1;
+        assert!(inspect_snapshot(&corrupt, "my-safe-passphrase").is_err());
+        assert_eq!(sample_value(&current), before);
+        assert_eq!(
+            current
+                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            version
+        );
+    }
+
     fn sample() -> Connection {
         let db = crate::runtime::open_database(std::path::Path::new(":memory:")).unwrap();
-        db.execute_batch("CREATE TABLE sample(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO sample VALUES(1,'原始资料');").unwrap();
+        set_sample_value(&db, "原始资料");
         db
     }
     fn raw_backup(db: &Connection) -> Vec<u8> {
@@ -244,9 +333,16 @@ mod tests {
         ]
         .concat()
     }
+    const SAMPLE_ID: &str = "90000000-0000-4000-8000-000000000001";
+    fn set_sample_value(db: &Connection, value: &str) {
+        let data = json!({"id":SAMPLE_ID,"name":value,"createdAt":"2026-10-01T00:00:00Z"});
+        db.execute("INSERT INTO m_brands(id,name,data) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET name=excluded.name,data=excluded.data",rusqlite::params![SAMPLE_ID,value,data.to_string()]).unwrap();
+    }
     fn sample_value(db: &Connection) -> String {
-        db.query_row("SELECT value FROM sample", [], |r| r.get(0))
-            .unwrap()
+        db.query_row("SELECT name FROM m_brands WHERE id=?1", [SAMPLE_ID], |r| {
+            r.get(0)
+        })
+        .unwrap()
     }
     #[test]
     fn encrypted_backup_round_trip_and_wrong_password_preserves_existing() {
@@ -254,9 +350,7 @@ mod tests {
         let data = encrypt_snapshot(&original, "my-safe-passphrase").unwrap();
         assert!(!String::from_utf8_lossy(&data).contains("原始资料"));
         let mut target = sample();
-        target
-            .execute("UPDATE sample SET value='当前资料'", [])
-            .unwrap();
+        set_sample_value(&target, "当前资料");
         assert!(restore_snapshot(&mut target, &data, "wrong-password").is_err());
         assert_eq!(sample_value(&target), "当前资料");
         restore_snapshot(&mut target, &data, "my-safe-passphrase").unwrap();
@@ -295,7 +389,7 @@ mod tests {
         let original = sample();
         original
             .execute_batch(
-                "CREATE TRIGGER surprise AFTER UPDATE ON sample BEGIN DELETE FROM sample;END;",
+                "CREATE TRIGGER surprise AFTER UPDATE ON m_brands BEGIN DELETE FROM m_brands;END;",
             )
             .unwrap();
         let data = encrypt_snapshot(&original, "my-safe-passphrase").unwrap();
@@ -329,9 +423,7 @@ mod tests {
             source.execute("DELETE FROM ai_settings", []).unwrap();
             let bytes = raw_backup(&source);
             let mut target = sample();
-            target
-                .execute("UPDATE sample SET value='当前资料'", [])
-                .unwrap();
+            set_sample_value(&target, "当前资料");
             assert!(restore_snapshot(&mut target, &bytes, "my-safe-passphrase").is_err());
             assert_eq!(sample_value(&target), "当前资料");
         }
@@ -358,9 +450,7 @@ mod tests {
         let source = sample();
         let data = encrypt_snapshot(&source, "my-safe-passphrase").unwrap();
         let mut target = sample();
-        target
-            .execute("UPDATE sample SET value='当前资料'", [])
-            .unwrap();
+        set_sample_value(&target, "当前资料");
         let dir = tempfile::tempdir().unwrap();
         let recovery = dir.path().join("recovery");
         assert!(restore_workspace(&mut target, &data, "wrong-passphrase", &recovery).is_err());
@@ -375,9 +465,7 @@ mod tests {
         let source = sample();
         let data = encrypt_snapshot(&source, "my-safe-passphrase").unwrap();
         let mut target = sample();
-        target
-            .execute("UPDATE sample SET value='恢复前资料'", [])
-            .unwrap();
+        set_sample_value(&target, "恢复前资料");
         target
             .execute("UPDATE ai_settings SET key_ref='local-only-ref'", [])
             .unwrap();
@@ -404,9 +492,7 @@ mod tests {
         let source = sample();
         let data = encrypt_snapshot(&source, "my-safe-passphrase").unwrap();
         let mut target = sample();
-        target
-            .execute("UPDATE sample SET value='当前资料'", [])
-            .unwrap();
+        set_sample_value(&target, "当前资料");
         let blocker = tempfile::NamedTempFile::new().unwrap();
         assert!(
             restore_workspace(&mut target, &data, "my-safe-passphrase", blocker.path()).is_err()
@@ -523,13 +609,15 @@ mod tests {
     }
     #[test]
     fn insufficient_destination_capacity_rolls_back_and_survives_reopen() {
-        let source = sample();
-        source.execute_batch("WITH RECURSIVE n(x) AS (VALUES(2) UNION ALL SELECT x+1 FROM n WHERE x<1500) INSERT INTO sample SELECT x,zeroblob(1000) FROM n;").unwrap();
+        let mut source = sample();
+        for i in 0..20 {
+            crate::core::handle(&mut source,"product.save",json!({"brandId":SAMPLE_ID,"name":format!("Large fixture {i}"),"sku":format!("LARGE-{i}"),"sourceText":"x".repeat(80000),"facts":[]})).unwrap();
+        }
         let data = encrypt_snapshot(&source, "my-safe-passphrase").unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("limited.sqlite3");
         let mut target = crate::runtime::open_database(&path).unwrap();
-        target.execute_batch("CREATE TABLE sample(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO sample VALUES(1,'保留当前资料');").unwrap();
+        set_sample_value(&target, "保留当前资料");
         let pages: i64 = target
             .pragma_query_value(None, "page_count", |r| r.get(0))
             .unwrap();

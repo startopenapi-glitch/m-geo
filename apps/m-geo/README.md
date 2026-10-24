@@ -1,61 +1,50 @@
-# M- GEO
+# M-GEO 0.15.0：开发与使用说明
 
-独立的本地商品 GEO 桌面工作台。Tauri 2 / React 19 / TypeScript / Rust / SQLite。
-这是内部验收版；各平台签名、安装、真实模型和发布验证状态见 `../../docs/release-0.1.1.md`，不能把构建配置当作实机通过。
+M-GEO 是本地优先的电商商品 GEO 桌面工作台，使用 Tauri 2、React 19、TypeScript、Rust 与 SQLite。当前目录提供 0.15.0 源码；[仓库 Releases](https://github.com/startopenapi-glitch/m-geo/releases) 中最后的预编译安装包仍是 v0.1.1。
 
-## 运行和构建
+## 开发环境与运行
 
-开发依赖：Node 24、pnpm 11.25.0、Rust 1.99.1。实际解析依赖由 pnpm-lock.yaml / Cargo.lock 固定。
-macOS 安装 Xcode Command Line Tools；Windows 安装 Microsoft C++ Build Tools、Windows SDK 和 WebView2。
+本地验证使用 Node 24、pnpm 11.25.0 和 Rust 1.99.1。macOS 需要 Xcode Command Line Tools；Windows 需要 Microsoft C++ Build Tools、Windows SDK 与 WebView2。
 
 ```sh
 cd apps/m-geo
 pnpm install --frozen-lockfile
 pnpm test
 pnpm typecheck
+pnpm build
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 cargo clippy --locked --manifest-path src-tauri/Cargo.toml --features desktop --all-targets -- -D warnings
 pnpm tauri dev
 ```
 
-Mac：`pnpm tauri build --bundles app,dmg`。
-Windows：在真实 Windows 构建机执行 `./scripts/build-windows.ps1`（需 Python、7-Zip）；macOS 配好 cargo-xwin/LLVM/NSIS 后可运行 `bash scripts/build-windows-cross.sh`。本次已有 Windows x64 安装包与静态验包证据，实机项目仍按 `verification/windows-test-guide.md` 配合验收。
-Intel Mac：安装 `x86_64-apple-darwin` Rust target，使用 `pnpm tauri build --target x86_64-apple-darwin --bundles app,dmg`。
-根目录 `.github/workflows/m-geo-desktop.yml` 提供手动内部构建矩阵，未推送或运行远程 CI。正式分发前另行配置签名公证，未签名产物只做内部验收。
+构建桌面包：
 
-## 使用路径
+- macOS Apple Silicon：`pnpm tauri build --bundles app`，之后可运行 `bash scripts/package-macos.sh` 制作本地 DMG。ad-hoc 签名不等同于 Developer ID 签名或 Apple 公证。
+- Windows：在 Windows 构建机执行 `./scripts/build-windows.ps1`（需要 Python 和 7-Zip）。跨平台脚本 `scripts/build-windows-cross.sh` 需要额外配置 cargo-xwin、LLVM 和 NSIS。
+- Intel Mac：安装 `x86_64-apple-darwin` Rust target，再以该 target 构建。0.15.0 的 Intel Mac 和 Windows 安装包没有随本次源码更新发布。
 
-1. 创建品牌，新增商品或导入 CSV。将有依据的参数写入“公开事实”，内部资料留在原始资料或私密字段。
-2. 保存并确认当前商品事实。修改事实会撤销确认；过期事实须更新。
-3. 内容工作室生成本地草稿，或在设置中自行配置模型后主动生成 AI 草稿。人工核对、编辑和审核后才可复制或导出。
-4. 在外部渠道实际发布后登记真实网址。软件不会自动发布或宣称已被 AI 收录。
-5. 在豆包、元宝、千问、百度手工提问，记录原始回答、引用和核对结果。消费者端和 API、基线和复测分开统计。
+发布和验证边界见 [0.15.0 源码说明](../../docs/release-0.15.0.md)。本地构建不代表远程 CI 已运行。
 
-## 数据与备份
+## 使用流程
 
-- macOS：`~/Library/Application Support/com.mantou.mgeo/m-geo.sqlite3`。
-- Windows：由 Tauri app_data_dir 解析到当前用户应用数据目录中的 `com.mantou.mgeo`；可在设置页查看准确位置。
-- SQLite 不宣称加密；macOS 工作目录权限 700、数据库 600。单机多品牌不等于多人账号权限。
-- 模型 Key 存系统凭据库；保存配置不请求模型。真实调用仅在用户明确点击测试或生成时发生，可能计费。
-- 备份使用 Argon2 派生密钥及 AES-256-GCM 认证加密；口令至少 10 字符，无找回功能。
-- 备份不含模型配置、Key 引用和临时 AI 任务。恢复后需重新配置模型；取消或等待全部 AI 任务结束才能恢复。
-- 恢复替换整个工作区；程序先校验所选备份，在候选副本完成初始化，再留存 `recovery/before-restore-*.mgeobak`（使用本次输入口令）并原子替换。成功提示显示快照位置，可打开快照目录。错误口令/破损/不兼容结构/业务身份错配均拒绝替换。
-- 空白安装欢迎页可直接恢复，不需要先创建品牌。恢复期间锁定导航和品牌切换，完成后统一重新加载全部资料。
-- 已损坏的业务记录仍会留在恢复前快照中供人工救援，不能将其当作已修复的有效备份。物理数据库损坏或磁盘无法写入时会拒绝替换，需先备份原文件并联系支持。
-- 卸载应用不主动删除本地资料。重装使用原独立目录；不要用旧版程序打开未来格式数据库。
+1. 创建品牌并录入商品资料。公开事实需有来源、可见范围与有效期；内部信息应标为私有。
+2. 核验商品事实和购买信息，再确认当前版本。
+3. 用模板编写本地草稿，或在设置中保存模型服务配置后主动生成候选内容。生成结果须人工核对、编辑和审核。
+4. 将审核后的内容复制或导出，在目标渠道自行发布；之后再登记真实发布网址。
+5. 在豆包、元宝、千问、百度等消费者入口手动查询，保存回答、引用和核对结论。缺测与未核实状态不会被当成推荐证据。
 
-## 从 CNVP 迁移
+M-GEO 不自动抓取、登录或发布到外部平台；不会把本地导出误记成已上线，也不承诺首页推荐、收录、排名、流量或销售结果。
 
-本版接受明确的 JSON 交换格式，不直接读取 CNVP 数据库。字段与限制见 `../../docs/import-format.md`。CNVP 现有文件不一定符合该格式；需先做只读转换导出再导入，未执行真实旧库迁移。
-只导入当前品牌的商品、问题、稿件、发布与观察；稳定来源实例 ID 防重复。同 SKU 冲突跳过连同其子记录，绝不覆盖客户数据。
-历史版本、快照、审批归属保留在迁移历史，当前确认/审核清空待重新核对，不继承历史审批权限。
+## 数据与模型
 
-## 边界与许可
+- macOS 默认工作区位于 `~/Library/Application Support/com.mantou.mgeo/`；Windows 路径由 Tauri 的用户数据目录确定，可在设置中查看。
+- SQLite 数据库本身不宣称加密。工作区通常只供当前系统用户使用；单机多品牌不提供多人协作权限。
+- API Key 存在操作系统凭据库中。保存配置不会调用模型；主动测试或生成时，所选商品/稿件内容可能发送至用户选择的服务并产生费用。
+- 加密备份覆盖工作区数据，不包含模型配置、API Key 或临时 AI 任务。恢复会替换整个工作区，请在升级或恢复前先保留当前备份。
+- 数据格式会随版本演进。新版工作区不要再用旧版程序打开；若需回退，应使用适配版本的备份恢复流程。卸载应用不会主动删除本地资料。
 
-不包含自动抓取、自动发布、向量检索、多人同步、飞书、支付或账号收费。资料与模型调用均不依赖 CNVP 服务。
-业务实现有 GEOFlow 移植来源，按 AGPL-3.0-only 提供对应源码与构建材料。见 `THIRD_PARTY_NOTICES.md`、`src-tauri/resources/LICENSE.txt`。
+## 范围与许可
 
-## 验收
+0.15.0 包含商品资料、内容审核导出、通用商品目录草稿、本地经营归因、批量运营、优化闭环、历史证据复核，以及按商品/问题查看推荐变化等功能。平台适配和真实效果需要在目标平台与真实商品上另行验证。
 
-`verification/browser-check.mjs` 是 Chromium →测试专用 stdio桥→真实 Rust/SQLite 流程，数据库临时创建并清理；不代替 Tauri IPC/原生对话框/Windows 实机验收。工具路径可由 `MGEO_PLAYWRIGHT`、`MGEO_CHROMIUM`、`MGEO_TEST_URL` 指定。
-`cargo run --example performance --manifest-path src-tauri/Cargo.toml` 测隔离本机数据；`cargo run --example vault_smoke --manifest-path src-tauri/Cargo.toml -- --offline-native-smoke` 仅在系统凭据库创建并删除随机无效哨兵，不调用网络。
+软件采用 AGPL-3.0-only；保留 GEOFlow 来源和第三方许可说明，见仓库根目录的 `LICENSE` 与 `THIRD_PARTY_NOTICES.md`。M-GEO 名称与商标不随代码许可开放。

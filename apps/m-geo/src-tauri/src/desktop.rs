@@ -1,6 +1,13 @@
-use crate::{ai, backup, files, runtime};
+use crate::{
+    ai, attribution_inspection_session, backup, channel_inspection_session,
+    experiment_inspection_session, files, runtime, site_inspection_session, site_package,
+};
+use attribution_inspection_session::AttributionInspectionSession;
+use channel_inspection_session::ChannelInspectionSession;
+use experiment_inspection_session::ExperimentInspectionSession;
 use rusqlite::Connection;
 use serde_json::{json, Value};
+use site_inspection_session::SiteInspectionSession;
 use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -10,6 +17,10 @@ use tauri::Manager;
 
 struct AppState {
     db: Arc<Mutex<Connection>>,
+    site_inspection: Arc<Mutex<SiteInspectionSession>>,
+    experiment_inspection: Arc<Mutex<ExperimentInspectionSession>>,
+    attribution_inspection: Arc<Mutex<AttributionInspectionSession>>,
+    channel_inspection: Arc<Mutex<ChannelInspectionSession>>,
     data_dir: PathBuf,
     resource_dir: PathBuf,
 }
@@ -67,8 +78,13 @@ async fn dispatch(
     }
     match action.as_str() {
         "app.info" => Ok(
-            json!({"name":"M- GEO","version":env!("CARGO_PKG_VERSION"),"dataLocation":state.data_dir.to_string_lossy(),"platform":std::env::consts::OS,"releaseChannel":"internal","updateUrl":null}),
+            json!({"name":"M- GEO","version":env!("CARGO_PKG_VERSION"),"dataLocation":state.data_dir.to_string_lossy(),"platform":std::env::consts::OS,"releaseChannel":"test","updateUrl":"https://github.com/startopenapi-glitch/m-geo/releases"}),
         ),
+        "app.openReleases" => {
+            open::that("https://github.com/startopenapi-glitch/m-geo/releases")
+                .map_err(|_| "无法打开版本发布页".to_string())?;
+            Ok(json!({"opened":true}))
+        }
         "app.openPlatform" => {
             let url = match text(&payload, "platform")? {
                 "doubao" => "https://www.doubao.com/",
@@ -96,7 +112,7 @@ async fn dispatch(
         "file.openText" => {
             let extensions: &[&str] = match text(&payload, "kind")? {
                 "csv" => &["csv"],
-                "cnvp" => &["json"],
+                "cnvp" | "evidence" => &["json"],
                 "document" => &["txt", "md", "markdown", "docx"],
                 _ => return Err("不支持的文件类型".into()),
             };
@@ -116,6 +132,454 @@ async fn dispatch(
             let bytes = read_bounded(file.path(), limit)?;
             let content = files::decode_document(&name, &bytes)?;
             Ok(json!({"name":name,"content":content}))
+        }
+        "file.inspectChannelReport" => {
+            channel_inspection_session::validate_payload(&action, &payload)?;
+            let brand = text(&payload, "brandId")?.to_owned();
+            let cache = state.channel_inspection.clone();
+            // Evict the previous ticket before any asynchronous picker work.
+            let generation = cache
+                .lock()
+                .map_err(|_| "历史通道复核会话暂不可用")?
+                .begin_selection();
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .add_filter("M-GEO 历史通道报告", &["zip"])
+                .pick_file()
+                .await
+            else {
+                return Ok(Value::Null);
+            };
+            let path = file.path().to_owned();
+            let name = file.file_name();
+            tauri::async_runtime::spawn_blocking(move || {
+                let bytes = read_bounded(&path, 20 * 1024 * 1024)?;
+                let package = site_package::decode_channel_package(&name, &bytes)?;
+                let mut cache = cache.lock().map_err(|_| "历史通道复核会话暂不可用")?;
+                cache.complete_selection(generation, &brand, package)
+            })
+            .await
+            .map_err(|_| "历史通道复核操作中断".to_string())?
+        }
+        "file.readChannelInspectionPage" => {
+            channel_inspection_session::validate_payload(&action, &payload)?;
+            let brand = text(&payload, "brandId")?;
+            let ticket = text(&payload, "inspectionId")?;
+            let page = payload["page"]
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or("历史通道明细页码无效")?;
+            let cache = state
+                .channel_inspection
+                .lock()
+                .map_err(|_| "历史通道复核会话暂不可用")?;
+            cache.read_page(brand, ticket, page)
+        }
+        "file.exportChannelInspection" => {
+            channel_inspection_session::validate_payload(&action, &payload)?;
+            let brand = text(&payload, "brandId")?.to_owned();
+            let ticket = text(&payload, "inspectionId")?.to_owned();
+            let expected = text(&payload, "reportFingerprint")?.to_owned();
+            let cache = state.channel_inspection.clone();
+            {
+                let cache = cache.lock().map_err(|_| "历史通道复核会话暂不可用")?;
+                cache.prepare_export(&brand, &ticket, &expected)?;
+            }
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .set_file_name("channel-inspection.zip")
+                .add_filter("历史通道本地验收报告", &["zip"])
+                .save_file()
+                .await
+            else {
+                return Ok(Value::Null);
+            };
+            let path = file.path().to_owned();
+            tauri::async_runtime::spawn_blocking(move || {
+                // Keep the selection fixed through serialization and atomic write.
+                // No session lock survives the native dialog await.
+                let cache = cache.lock().map_err(|_| "历史通道复核会话暂不可用")?;
+                let export = cache.prepare_export(&brand, &ticket, &expected)?;
+                write_atomic(&path, &files::site_zip(&export)?)?;
+                Ok(json!({"saved":true}))
+            })
+            .await
+            .map_err(|_| "历史通道复核报告导出中断".to_string())?
+        }
+        "file.inspectAttributionReport" => {
+            attribution_inspection_session::validate_payload(&action, &payload)?;
+            let brand = text(&payload, "brandId")?.to_owned();
+            let cache = state.attribution_inspection.clone();
+            // Evict the previous ticket before any asynchronous picker work.
+            let generation = cache
+                .lock()
+                .map_err(|_| "历史归因验收会话暂不可用")?
+                .begin_selection();
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .add_filter("M-GEO 历史归因报告", &["zip"])
+                .pick_file()
+                .await
+            else {
+                return Ok(Value::Null);
+            };
+            let path = file.path().to_owned();
+            let name = file.file_name();
+            tauri::async_runtime::spawn_blocking(move || {
+                let bytes = read_bounded(&path, 20 * 1024 * 1024)?;
+                let package = site_package::decode_attribution_package(&name, &bytes)?;
+                let mut cache = cache.lock().map_err(|_| "历史归因验收会话暂不可用")?;
+                cache.complete_selection(generation, &brand, package)
+            })
+            .await
+            .map_err(|_| "历史归因验收操作中断".to_string())?
+        }
+        "file.readAttributionInspectionPage" => {
+            attribution_inspection_session::validate_payload(&action, &payload)?;
+            let brand = text(&payload, "brandId")?;
+            let ticket = text(&payload, "inspectionId")?;
+            let kind = text(&payload, "kind")?;
+            let page = payload["page"]
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or("历史归因明细页码无效")?;
+            let cache = state
+                .attribution_inspection
+                .lock()
+                .map_err(|_| "历史归因验收会话暂不可用")?;
+            cache.read_page(brand, ticket, kind, page)
+        }
+        "file.exportAttributionInspection" => {
+            attribution_inspection_session::validate_payload(&action, &payload)?;
+            let brand = text(&payload, "brandId")?.to_owned();
+            let ticket = text(&payload, "inspectionId")?.to_owned();
+            let expected = text(&payload, "reportFingerprint")?.to_owned();
+            let cache = state.attribution_inspection.clone();
+            {
+                let cache = cache.lock().map_err(|_| "历史归因验收会话暂不可用")?;
+                cache.prepare_export(&brand, &ticket, &expected)?;
+            }
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .set_file_name("attribution-inspection.zip")
+                .add_filter("历史归因本地验收报告", &["zip"])
+                .save_file()
+                .await
+            else {
+                return Ok(Value::Null);
+            };
+            let path = file.path().to_owned();
+            tauri::async_runtime::spawn_blocking(move || {
+                // Keep the selection fixed through serialization and atomic write.
+                // No session lock survives the native dialog await.
+                let cache = cache.lock().map_err(|_| "历史归因验收会话暂不可用")?;
+                let export = cache.prepare_export(&brand, &ticket, &expected)?;
+                write_atomic(&path, &files::site_zip(&export)?)?;
+                Ok(json!({"saved":true}))
+            })
+            .await
+            .map_err(|_| "历史归因验收报告导出中断".to_string())?
+        }
+        "file.inspectExperimentReport" => {
+            experiment_inspection_session::validate_payload(&action, &payload)?;
+            let brand = text(&payload, "brandId")?.to_owned();
+            let cache = state.experiment_inspection.clone();
+            // Evict the previous ticket before any asynchronous picker work.
+            let generation = cache
+                .lock()
+                .map_err(|_| "历史验收会话暂不可用")?
+                .begin_selection();
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .add_filter("M-GEO 历史实验报告", &["zip"])
+                .pick_file()
+                .await
+            else {
+                return Ok(Value::Null);
+            };
+            let path = file.path().to_owned();
+            let name = file.file_name();
+            tauri::async_runtime::spawn_blocking(move || {
+                let bytes = read_bounded(&path, 20 * 1024 * 1024)?;
+                let package = site_package::decode_experiment_package(&name, &bytes)?;
+                let mut cache = cache.lock().map_err(|_| "历史验收会话暂不可用")?;
+                cache.complete_selection(generation, &brand, package)
+            })
+            .await
+            .map_err(|_| "历史验收操作中断".to_string())?
+        }
+        "file.readExperimentInspectionPage" => {
+            experiment_inspection_session::validate_payload(&action, &payload)?;
+            let brand = text(&payload, "brandId")?;
+            let ticket = text(&payload, "inspectionId")?;
+            let page = payload["page"]
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or("历史样本页码无效")?;
+            let cache = state
+                .experiment_inspection
+                .lock()
+                .map_err(|_| "历史验收会话暂不可用")?;
+            cache.read_page(brand, ticket, page)
+        }
+        "file.exportExperimentInspection" => {
+            experiment_inspection_session::validate_payload(&action, &payload)?;
+            let brand = text(&payload, "brandId")?.to_owned();
+            let ticket = text(&payload, "inspectionId")?.to_owned();
+            let expected = text(&payload, "reportFingerprint")?.to_owned();
+            let cache = state.experiment_inspection.clone();
+            {
+                let cache = cache.lock().map_err(|_| "历史验收会话暂不可用")?;
+                cache.prepare_export(&brand, &ticket, &expected)?;
+            }
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .set_file_name("experiment-inspection.zip")
+                .add_filter("历史实验本地验收报告", &["zip"])
+                .save_file()
+                .await
+            else {
+                return Ok(Value::Null);
+            };
+            let path = file.path().to_owned();
+            tauri::async_runtime::spawn_blocking(move || {
+                // Keep the selection fixed through serialization and atomic write.
+                // No session lock survives the native dialog await.
+                let cache = cache.lock().map_err(|_| "历史验收会话暂不可用")?;
+                let export = cache.prepare_export(&brand, &ticket, &expected)?;
+                write_atomic(&path, &files::site_zip(&export)?)?;
+                Ok(json!({"saved":true}))
+            })
+            .await
+            .map_err(|_| "历史验收报告导出中断".to_string())?
+        }
+        "file.inspectSitePackage" => {
+            site_inspection_session::validate_payload(&action, &payload)?;
+            let brand = text(&payload, "brandId")?.to_owned();
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .add_filter("M-GEO 网站内容包", &["zip"])
+                .pick_file()
+                .await
+            else {
+                return Ok(Value::Null);
+            };
+            let path = file.path().to_owned();
+            let name = file.file_name();
+            let db = state.db.clone();
+            let cache = state.site_inspection.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let bytes = read_bounded(&path, 20 * 1024 * 1024)?;
+                let package = site_package::decode_site_package(&name, &bytes)?;
+                let db = db.lock().map_err(|_| "资料库暂不可用")?;
+                let mut cache = cache.lock().map_err(|_| "验收会话暂不可用")?;
+                cache.inspect(&db, &brand, package)
+            })
+            .await
+            .map_err(|_| "验收操作中断".to_string())?
+        }
+        "file.recheckSitePackage" => {
+            site_inspection_session::validate_payload(&action, &payload)?;
+            let brand = text(&payload, "brandId")?.to_owned();
+            let ticket = text(&payload, "inspectionId")?.to_owned();
+            let db = state.db.clone();
+            let cache = state.site_inspection.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let db = db.lock().map_err(|_| "资料库暂不可用")?;
+                let mut cache = cache.lock().map_err(|_| "验收会话暂不可用")?;
+                cache.recheck(&db, &brand, &ticket)
+            })
+            .await
+            .map_err(|_| "验收操作中断".to_string())?
+        }
+        "file.exportSiteInspection" => {
+            site_inspection_session::validate_payload(&action, &payload)?;
+            let brand = text(&payload, "brandId")?.to_owned();
+            let ticket = text(&payload, "inspectionId")?.to_owned();
+            let expected = text(&payload, "reportFingerprint")?.to_owned();
+            {
+                let db = state.db.lock().map_err(|_| "资料库暂不可用")?;
+                let cache = state
+                    .site_inspection
+                    .lock()
+                    .map_err(|_| "验收会话暂不可用")?;
+                cache.prepare_export(&db, &brand, &ticket, &expected)?;
+            }
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .set_file_name("M-GEO-网站包验收报告.zip")
+                .add_filter("本地验收报告", &["zip"])
+                .save_file()
+                .await
+            else {
+                return Ok(Value::Null);
+            };
+            let path = file.path().to_owned();
+            let db = state.db.clone();
+            let cache = state.site_inspection.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                // The workspace or latest selection may change while the dialog is open.
+                // Always lock DB before cache; no lock survives a dialog await.
+                let db = db.lock().map_err(|_| "资料库暂不可用")?;
+                let cache = cache.lock().map_err(|_| "验收会话暂不可用")?;
+                let report = cache.prepare_export(&db, &brand, &ticket, &expected)?;
+                write_atomic(&path, &files::site_zip(&report)?)?;
+                Ok(json!({"saved":true}))
+            })
+            .await
+            .map_err(|_| "报告导出中断".to_string())?
+        }
+        "file.exportSite" => {
+            {
+                let mut db = state.db.lock().map_err(|_| "资料库暂不可用")?;
+                runtime::core_dispatch(&mut db, "site.prepare", payload.clone())?;
+            }
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .set_file_name("M-GEO-商品网站内容包.zip")
+                .add_filter("网站内容包", &["zip"])
+                .save_file()
+                .await
+            else {
+                return Ok(Value::Null);
+            };
+            let mut db = state.db.lock().map_err(|_| "资料库暂不可用")?;
+            let current = runtime::core_dispatch(&mut db, "site.prepare", payload)?;
+            write_atomic(file.path(), &files::site_zip(&current)?)?;
+            Ok(json!({"saved":true}))
+        }
+        "file.exportTransitions" => {
+            let db = state.db.clone();
+            let initial_payload = payload.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let mut db = db.lock().map_err(|_| "资料库暂不可用")?;
+                let export =
+                    runtime::core_dispatch(&mut db, "campaign.transitionExport", initial_payload)?;
+                files::site_zip(&export)?;
+                Ok::<(), String>(())
+            })
+            .await
+            .map_err(|_| "推荐变化导出中断".to_string())??;
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .set_file_name("recommendation-transitions.zip")
+                .add_filter("M-GEO 本地推荐变化报告", &["zip"])
+                .save_file()
+                .await
+            else {
+                return Ok(Value::Null);
+            };
+            let path = file.path().to_owned();
+            let db = state.db.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                // Keep the same payload/hash and DB lock through revalidation,
+                // ZIP serialization and atomic write; no lock crosses the dialog await.
+                let mut db = db.lock().map_err(|_| "资料库暂不可用")?;
+                let current =
+                    runtime::core_dispatch(&mut db, "campaign.transitionExport", payload)?;
+                write_atomic(&path, &files::site_zip(&current)?)?;
+                Ok(json!({"saved":true}))
+            })
+            .await
+            .map_err(|_| "推荐变化导出中断".to_string())?
+        }
+        "file.exportReport" => {
+            {
+                let mut db = state.db.lock().map_err(|_| "资料库暂不可用")?;
+                runtime::core_dispatch(&mut db, "campaign.report", payload.clone())?;
+            }
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .set_file_name("M-GEO-固定实验报告.zip")
+                .add_filter("实测证据报告", &["zip"])
+                .save_file()
+                .await
+            else {
+                return Ok(Value::Null);
+            };
+            // A corrected assessment while the save dialog is open must be reflected.
+            let mut db = state.db.lock().map_err(|_| "资料库暂不可用")?;
+            let current = runtime::core_dispatch(&mut db, "campaign.report", payload)?;
+            write_atomic(file.path(), &files::site_zip(&current)?)?;
+            Ok(json!({"saved":true}))
+        }
+        "file.exportPilot" | "file.exportCollection" | "file.exportSiteAudit" => {
+            let (core_action, filename) = match action.as_str() {
+                "file.exportPilot" => ("pilot.prepare", "M-GEO-试点准备资料.zip"),
+                "file.exportCollection" => ("collection.prepare", "M-GEO-实验采集任务.zip"),
+                _ => ("site.audit", "M-GEO-本地页面与部署检查.zip"),
+            };
+            {
+                let mut db = state.db.lock().map_err(|_| "资料库暂不可用")?;
+                runtime::core_dispatch(&mut db, core_action, payload.clone())?;
+            }
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .set_file_name(filename)
+                .add_filter("本地试点资料", &["zip"])
+                .save_file()
+                .await
+            else {
+                return Ok(Value::Null);
+            };
+            let mut db = state.db.lock().map_err(|_| "资料库暂不可用")?;
+            let current = runtime::core_dispatch(&mut db, core_action, payload)?;
+            write_atomic(file.path(), &files::site_zip(&current)?)?;
+            Ok(json!({"saved":true}))
+        }
+        "file.exportAttribution"
+        | "file.exportAttributionTemplate"
+        | "file.exportLocalJob"
+        | "file.exportOptimization" => {
+            let (core_action, filename) = if action == "file.exportAttribution" {
+                ("attribution.report", "M-GEO-local-attribution-report.zip")
+            } else if action == "file.exportOptimization" {
+                ("optimization.export", "M-GEO-optimization-plan.zip")
+            } else if action == "file.exportLocalJob" {
+                ("localJobs.export", "M-GEO-local-import-job.zip")
+            } else {
+                (
+                    "attribution.template",
+                    "M-GEO-simulated-attribution-template.zip",
+                )
+            };
+            {
+                let mut db = state.db.lock().map_err(|_| "资料库暂不可用")?;
+                let preview = runtime::core_dispatch(&mut db, core_action, payload.clone())?;
+                files::site_zip(&preview)?;
+            }
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .set_file_name(filename)
+                .add_filter("M-GEO 本地证据资料", &["zip"])
+                .save_file()
+                .await
+            else {
+                return Ok(Value::Null);
+            };
+            let mut db = state.db.lock().map_err(|_| "资料库暂不可用")?;
+            let current = runtime::core_dispatch(&mut db, core_action, payload)?;
+            write_atomic(file.path(), &files::site_zip(&current)?)?;
+            Ok(json!({"saved":true}))
+        }
+        "file.exportFeed" | "file.exportFeedOperation" => {
+            let (core_action, filename) = if action == "file.exportFeed" {
+                ("feed.prepare", "M-GEO-local-feed-draft.zip")
+            } else {
+                match text(&payload, "operation")? {
+                    "compare" => ("feed.compare", "M-GEO-local-feed-comparison.zip"),
+                    "simulate" => ("feed.simulate", "M-GEO-simulated-receipt.zip"),
+                    "receipt" => ("feed.checkReceipt", "M-GEO-simulated-receipt-check.zip"),
+                    _ => return Err("不支持的本地商品通道操作".into()),
+                }
+            };
+            {
+                let mut db = state.db.lock().map_err(|_| "资料库暂不可用")?;
+                let preview = runtime::core_dispatch(&mut db, core_action, payload.clone())?;
+                // Enforce package bounds before opening a destination chooser as well.
+                files::site_zip(&preview)?;
+            }
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .set_file_name(filename)
+                .add_filter("M-GEO 本地草稿", &["zip"])
+                .save_file()
+                .await
+            else {
+                return Ok(Value::Null);
+            };
+            // A concurrent edit or an expiry crossing while the dialog is open invalidates
+            // the preview. Recompute under the DB lock before atomically writing files.
+            let mut db = state.db.lock().map_err(|_| "资料库暂不可用")?;
+            let current = runtime::core_dispatch(&mut db, core_action, payload)?;
+            write_atomic(file.path(), &files::site_zip(&current)?)?;
+            Ok(json!({"saved":true}))
         }
         "file.exportDraft" => {
             let format = text(&payload, "format")?.to_string();
@@ -176,6 +640,22 @@ async fn dispatch(
             .map_err(|_| "备份中断".to_string())??;
             Ok(json!({"saved":true}))
         }
+        "backup.inspect" => {
+            let password = text(&payload, "password")?.to_string();
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .add_filter("M-GEO 加密备份", &["mgeobak"])
+                .pick_file()
+                .await
+            else {
+                return Ok(Value::Null);
+            };
+            let bytes = read_bounded(file.path(), 100 * 1024 * 1024 + 52)?;
+            tauri::async_runtime::spawn_blocking(move || {
+                backup::inspect_snapshot(&bytes, &password)
+            })
+            .await
+            .map_err(|_| "备份校验中断".to_string())?
+        }
         "backup.restore" => {
             if payload.get("confirm") != Some(&Value::Bool(true)) {
                 return Err("恢复需要确认替换整个工作区".into());
@@ -227,6 +707,12 @@ pub fn run() {
             }
             app.manage(AppState {
                 db: Arc::new(Mutex::new(db)),
+                site_inspection: Arc::new(Mutex::new(SiteInspectionSession::default())),
+                experiment_inspection: Arc::new(Mutex::new(ExperimentInspectionSession::default())),
+                attribution_inspection: Arc::new(Mutex::new(
+                    AttributionInspectionSession::default(),
+                )),
+                channel_inspection: Arc::new(Mutex::new(ChannelInspectionSession::default())),
                 data_dir: dir,
                 resource_dir: app.path().resource_dir()?,
             });

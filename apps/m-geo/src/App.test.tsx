@@ -117,7 +117,7 @@ describe('M- GEO workspace',()=>{
   await act(async()=>{restored=true;finishRestore({restored:true,recoveryPath:'/local/recovery/pre-restore.sqlite'});});
   await screen.findByRole('option',{name:'恢复后的品牌'});
   expect(screen.queryByRole('option',{name:'乙品牌'})).not.toBeInTheDocument();
-  expect(await screen.findByText('恢复后的商品')).toBeInTheDocument();
+  expect((await screen.findAllByText('恢复后的商品')).length).toBeGreaterThan(0);
   expect(screen.getByText(/pre-restore\.sqlite/)).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button',{name:'商品资料'}));
   expect(screen.getByText(/pre-restore\.sqlite/)).toBeInTheDocument();

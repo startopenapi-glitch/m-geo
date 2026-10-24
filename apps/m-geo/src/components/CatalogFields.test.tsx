@@ -1,0 +1,6 @@
+import {fireEvent,render,screen} from '@testing-library/react';
+import {expect,it,vi} from 'vitest';
+import CatalogFields from './CatalogFields';
+import type {Fact} from '../types';
+it('edits identity while preserving provenance privacy expiry and unrelated facts',()=>{const facts:Fact[]=[{id:'catalog:brand',label:'Brand',value:'Old',source:'Approved source',visibility:'private',validUntil:'2099-01-01'},{id:'other',label:'Capacity',value:'1L',source:'Spec',visibility:'public',validUntil:null}];const change=vi.fn();render(<CatalogFields facts={facts} onChange={change}/>);fireEvent.change(screen.getByLabelText('渠道身份 · 品牌'),{target:{value:'New'}});expect(change).toHaveBeenLastCalledWith([facts[1],{...facts[0],value:'New'}]);});
+it('keeps unknown enums blank and creates no guessed identity',()=>{const change=vi.fn();render(<CatalogFields facts={[]} onChange={change}/>);expect(screen.getByLabelText('渠道身份 · 商品形态')).toHaveValue('');expect(screen.getByLabelText('渠道身份 · 新旧状态')).toHaveValue('');expect(change).not.toHaveBeenCalled();fireEvent.change(screen.getByLabelText('渠道身份 · 商品形态'),{target:{value:'variant'}});expect(change.mock.calls[0][0][0]).toMatchObject({id:'catalog:kind',value:'variant',source:'',visibility:'public',validUntil:null});});

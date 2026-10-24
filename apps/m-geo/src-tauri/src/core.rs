@@ -5,13 +5,65 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use uuid::Uuid;
+mod attribution;
+mod attribution_inspection;
+pub use attribution_inspection::{
+    attribution_inspection_export, inspect_attribution_report, InspectedAttribution,
+};
+#[cfg(test)]
+mod attribution_acceptance;
+mod attribution_csv;
+#[cfg(test)]
+mod attribution_inspection_tests;
+mod attribution_report;
+mod attribution_template;
+mod batch;
+mod catalog;
+mod collection;
+mod commerce;
+mod delivery_inspection;
+mod experiment_evidence;
+mod experiment_inspection;
+mod experiments;
+pub use experiment_inspection::{
+    experiment_inspection_export, inspect_experiment_report, InspectedExperiment,
+};
+mod channel_inspection;
+#[cfg(test)]
+mod experiment_inspection_tests;
+mod feed;
+mod feed_ops;
+pub use channel_inspection::{channel_inspection_export, inspect_channel_report, InspectedChannel};
+#[cfg(test)]
+mod channel_inspection_tests;
+#[cfg(test)]
+mod import_diagnostics_acceptance;
 mod imports;
+mod local_jobs;
+mod observations;
+#[cfg(test)]
+mod operations_acceptance;
+mod operations_template;
+mod optimization;
+#[cfg(test)]
+mod optimization_acceptance;
+mod optimization_diagnosis;
+mod pilot;
+mod readiness;
+mod recommendation_transitions;
+#[cfg(test)]
+mod recommendation_transitions_tests;
+mod reports;
+mod site;
+mod site_audit;
+mod strict_json;
 #[cfg(test)]
 mod tests;
 mod validation;
 type Result<T> = std::result::Result<T, String>;
+const DB_ERROR: &str = "本地资料操作失败，请重试；如持续失败请恢复备份或联系支持";
 fn db_error(_: rusqlite::Error) -> String {
-    "本地资料操作失败，请重试；如持续失败请恢复备份或联系支持".into()
+    DB_ERROR.into()
 }
 fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
@@ -141,6 +193,9 @@ fn facts(v: &Value) -> Result<Value> {
     let mut out = vec![];
     for f in fs {
         let fid = text(f, "id", 100, true)?;
+        let mut canonical = f.clone();
+        canonical["id"] = json!(fid);
+        commerce::value(&canonical)?;
         if !ids.insert(fid.clone()) {
             return Err("事实标识重复".into());
         }
@@ -166,6 +221,7 @@ fn check_public(p: &Value) -> Result<Vec<Value>> {
     let mut public = vec![];
     for f in p["facts"].as_array().ok_or("商品事实格式错误")? {
         if f["visibility"] == "public" {
+            commerce::freshness(f)?;
             if f["source"].as_str().unwrap_or("").trim().is_empty() {
                 return Err("公开事实缺少依据，请补充后确认".into());
             }
@@ -267,7 +323,7 @@ pub fn initialize(c: &mut Connection) -> Result<()> {
         )
         .optional()
         .map_err(db_error)?;
-    if existing.is_some_and(|v| v != 1) {
+    if existing.is_some_and(|v| ![1, 2, 3, 4, 5].contains(&v)) {
         return Err("资料格式版本与当前应用不兼容，请使用配套版本或备份".into());
     }
     tx.execute_batch("INSERT OR IGNORE INTO m_core_meta VALUES(1,1);
@@ -283,6 +339,13 @@ pub fn initialize(c: &mut Connection) -> Result<()> {
  CREATE TABLE IF NOT EXISTS m_migration_skips(source TEXT NOT NULL,kind TEXT NOT NULL,old_id TEXT NOT NULL,brand_id TEXT NOT NULL,PRIMARY KEY(source,kind,old_id),FOREIGN KEY(brand_id) REFERENCES m_brands(id));
  CREATE TABLE IF NOT EXISTS m_migration_history(source TEXT NOT NULL,kind TEXT NOT NULL,old_id TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(source,kind,old_id),FOREIGN KEY(source,kind,old_id) REFERENCES m_migration_map(source,kind,old_id));
  CREATE INDEX IF NOT EXISTS m_products_brand ON m_products(brand_id); CREATE INDEX IF NOT EXISTS m_questions_brand ON m_questions(brand_id); CREATE INDEX IF NOT EXISTS m_drafts_brand ON m_drafts(brand_id); CREATE INDEX IF NOT EXISTS m_publications_brand ON m_publications(brand_id); CREATE INDEX IF NOT EXISTS m_observations_brand ON m_observations(brand_id);").map_err(db_error)?;
+    tx.execute_batch(experiments::TABLE_SQL).map_err(db_error)?;
+    tx.execute_batch(attribution::TABLE_SQL).map_err(db_error)?;
+    tx.execute_batch(local_jobs::TABLE_SQL).map_err(db_error)?;
+    tx.execute_batch(optimization::TABLE_SQL)
+        .map_err(db_error)?;
+    tx.execute("UPDATE m_core_meta SET schema_version=5 WHERE id=1", [])
+        .map_err(db_error)?;
     tx.commit().map_err(db_error)
 }
 pub fn handle(c: &mut Connection, action: &str, payload: Value) -> Result<Value> {
@@ -306,6 +369,21 @@ pub fn handle(c: &mut Connection, action: &str, payload: Value) -> Result<Value>
             | "draft.review"
             | "publication.add"
             | "observation.add"
+            | "observation.assess"
+            | "campaign.create"
+            | "attribution.apply"
+            | "optimization.create"
+            | "optimization.update"
+            | "optimization.check"
+            | "localJobs.create"
+            | "localJobs.resume"
+            | "localJobs.pause"
+            | "localJobs.step"
+            | "localJobs.retry"
+            | "localJobs.cancel"
+            | "commerce.applyBatch"
+            | "pilot.createQuestions"
+            | "collection.apply"
             | "import.csv"
             | "import.cnvp"
             | "internal.ai.commit"
@@ -317,11 +395,24 @@ pub fn handle(c: &mut Connection, action: &str, payload: Value) -> Result<Value>
                 .as_str()
                 .or_else(|| payload["brandId"].as_str())
         };
-        tx.execute(
-            "INSERT INTO m_audit(occurred_at,action,brand_id,object_id)VALUES(?1,?2,?3,?4)",
-            params![now(), action, brand_id, result["id"].as_str()],
-        )
-        .map_err(db_error)?;
+        let inserted = tx
+            .execute(
+                "INSERT INTO m_audit(occurred_at,action,brand_id,object_id)VALUES(?1,?2,?3,?4)",
+                params![
+                    now(),
+                    action,
+                    brand_id,
+                    if action == "attribution.apply" {
+                        result["datasetId"].as_str()
+                    } else {
+                        result["id"].as_str()
+                    }
+                ],
+            )
+            .map_err(db_error)?;
+        if inserted != 1 {
+            return Err("操作审计保存失败".into());
+        }
     }
     tx.commit().map_err(db_error)?;
     Ok(result)
@@ -359,6 +450,7 @@ fn dispatch(c: &Connection, a: &str, p: &Value) -> Result<Value> {
         "workspace.snapshot" => {
             let mut o = json!({"truncated":false});
             for (key, table, limit) in [
+                ("campaigns", "m_campaigns", 1000),
                 ("products", "m_products", 1000),
                 ("questions", "m_questions", 5000),
                 ("drafts", "m_drafts", 5000),
@@ -373,6 +465,53 @@ fn dispatch(c: &Connection, a: &str, p: &Value) -> Result<Value> {
             }
             Ok(o)
         }
+        "attribution.preview" => attribution::preview(c, &b, p),
+        "attribution.apply" => attribution::apply(c, &b, p),
+        "attribution.list" => attribution::list(c, &b, p),
+        "attribution.report" => attribution_report::prepare(c, &b, p),
+        "attribution.template" => attribution_template::prepare(c, &b, p),
+        "attribution.csvTemplate" => operations_template::prepare(c, &b, p),
+        "attribution.csvInspect" => attribution_csv::inspect(c, &b, p),
+        "attribution.csvPrepare" => attribution_csv::prepare(c, &b, p),
+        "attribution.csvInspectDetailed" => attribution_csv::inspect_detailed(c, &b, p),
+        "attribution.csvDiagnose" => attribution_csv::diagnose(c, &b, p),
+        "optimization.diagnose" => optimization_diagnosis::prepare(c, &b, p),
+        "optimization.create" => optimization::create(c, &b, p),
+        "optimization.list" => optimization::list(c, &b, p),
+        "optimization.get" => optimization::get(c, &b, p),
+        "optimization.update" => optimization::update(c, &b, p),
+        "optimization.check" => optimization::check(c, &b, p),
+        "optimization.export" => optimization::prepare_export(c, &b, p),
+        "localJobs.create" => local_jobs::create(c, &b, p),
+        "localJobs.list" => local_jobs::list(c, &b, p),
+        "localJobs.get" => local_jobs::get(c, &b, p),
+        "localJobs.resume" => local_jobs::resume(c, &b, p),
+        "localJobs.pause" => local_jobs::pause(c, &b, p),
+        "localJobs.step" => local_jobs::step(c, &b, p),
+        "localJobs.retry" => local_jobs::retry(c, &b, p),
+        "localJobs.cancel" => local_jobs::cancel(c, &b, p),
+        "localJobs.export" => local_jobs::prepare_export(c, &b, p),
+
+        "catalog.inspect" => catalog::inspect(c, &b, p),
+        "feed.prepare" => feed::prepare(c, &b, p),
+        "feed.compare" => feed_ops::compare(c, &b, p),
+        "feed.simulate" => feed_ops::simulate(c, &b, p),
+        "feed.checkReceipt" => feed_ops::check_receipt(c, &b, p),
+        "site.prepare" => site::prepare(c, &b, p),
+        "site.audit" => site_audit::prepare(c, &b, p),
+        "pilot.prepare" => pilot::prepare(c, &b, p),
+        "pilot.createQuestions" => pilot::create_questions(c, &b, p),
+        "collection.prepare" => collection::prepare(c, &b, p),
+        "collection.preview" => collection::preview(c, &b, p),
+        "collection.apply" => collection::apply(c, &b, p),
+        "campaign.report" => reports::prepare(c, &b, p),
+        "campaign.transitions" => recommendation_transitions::prepare(c, &b, p),
+        "campaign.transitionEvidence" => recommendation_transitions::evidence(c, &b, p),
+        "campaign.transitionExport" => recommendation_transitions::prepare_export(c, &b, p),
+        "commerce.previewBatch" => batch::preview(c, &b, p),
+        "commerce.applyBatch" => batch::apply(c, &b, p),
+        "observation.assess" => observations::assess(c, &b, p),
+        "campaign.create" => experiments::create(c, &b, p),
         "product.save" => save_product(c, &b, p),
         "product.confirm" => {
             let object = guid(p, "id")?;
@@ -785,9 +924,12 @@ fn observation_value_with_history(
     let cited = text(p, "citedUrl", 2000, false)?;
     web_url(&cited, false)?;
     let evidence = raw(p, "evidenceNote", 5000, false)?;
-    Ok(
-        json!({"brandId":b,"productId":pid,"questionId":qid,"querySnapshot":q["text"],"branded":q["branded"],"platform":platform,"surface":surface,"phase":phase,"modelLabel":model,"searchMode":search,"testedAt":time,"answer":answer,"mentioned":mentioned,"accuracy":accuracy,"citedUrl":cited,"evidenceNote":evidence}),
-    )
+    let mut v = json!({"brandId":b,"productId":pid,"questionId":qid,"querySnapshot":q["text"],"branded":q["branded"],"platform":platform,"surface":surface,"phase":phase,"modelLabel":model,"searchMode":search,"testedAt":time,"answer":answer,"mentioned":mentioned,"accuracy":accuracy,"citedUrl":cited,"evidenceNote":evidence});
+    if let Some(a) = p.get("assessment") {
+        v["assessment"] = a.clone();
+        v["assessment"] = experiments::assessment(c, b, &v, historical)?;
+    }
+    Ok(v)
 }
 fn add_observation(c: &Connection, b: &str, p: &Value) -> Result<Value> {
     let mut v = observation_value(c, b, p)?;
@@ -803,6 +945,7 @@ fn add_observation(c: &Connection, b: &str, p: &Value) -> Result<Value> {
     {
         return parse_data(data);
     }
+    experiments::check_slot(c, b, &v)?;
     v["id"] = json!(id());
     c.execute("INSERT INTO m_observations(id,brand_id,product_id,question_id,dedup,data)VALUES(?1,?2,?3,?4,?5,?6)",params![v["id"].as_str(),b,v["productId"].as_str(),v["questionId"].as_str(),hash,v.to_string()]).map_err(db_error)?;
     Ok(v)
@@ -813,4 +956,51 @@ pub fn validate_database(c: &Connection) -> Result<()> {
     validation::validate(c).map_err(|_| {
         "备份商品业务资料无效、已损坏或归属不一致，请保留当前数据并重新导出".to_string()
     })
+}
+
+/// Only an executable ready queue blocks restore. A corrupt current queue must
+/// not prevent the user from recovering a previously validated backup.
+pub fn has_ready_local_jobs(c: &Connection) -> Result<bool> {
+    let exists: bool = c
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='m_local_jobs')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(db_error)?;
+    if !exists {
+        return Ok(false);
+    }
+    let mut statement = c
+        .prepare("SELECT id,brand_id,data FROM m_local_jobs")
+        .map_err(db_error)?;
+    let rows = statement
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(db_error)?;
+    for row in rows {
+        let (id, b, data) = row.map_err(db_error)?;
+        if let Ok(value) = serde_json::from_str::<Value>(&data) {
+            if value["status"] == "ready"
+                && local_jobs::get(c, &b, &json!({"brandId":b,"jobId":id})).is_ok()
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Inspect an already bounded decoded site artifact without changing the database.
+pub fn inspect_site_package(c: &Connection, brand_id: &str, package: &Value) -> Result<Value> {
+    delivery_inspection::inspect(c, brand_id, package)
+}
+/// Export only a report retained and revalidated by the native session.
+pub fn export_site_inspection(report: &Value) -> Result<Value> {
+    delivery_inspection::export(report)
 }
