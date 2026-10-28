@@ -4,7 +4,7 @@
 
 **本地优先的电商商品 GEO 桌面工作台。**
 
-仓库主分支源码已更新至 **0.15.0**（2026-10-24）。这次更新发布的是源码；尚未附上 0.15.0 安装包。当前 Releases 中最后一份公开安装包仍是 v0.1.1，不能把它当作 0.15.0 使用。
+当前源码版本为 **0.21.0**。本次更新提供源码，尚未发布 0.21.0 安装包。Releases 中最后一份公开安装包仍是 v0.1.1，不能把它当作 0.21.0 使用。
 
 M-GEO 帮助团队整理有来源的商品事实、制作并审核内容、导出本地交付物，并记录 AI 助手对商品的实际回答和引用。它不会自动发布商品内容，也不保证任何 AI 首页推荐、收录、排名、流量或销量。
 
@@ -22,8 +22,8 @@ M-GEO 帮助团队整理有来源的商品事实、制作并审核内容、导�
 ## 下载与版本
 
 - [公开 Releases](https://github.com/startopenapi-glitch/m-geo/releases)：目前最后的预编译安装包为 v0.1.1。
-- [0.15.0 主分支源码 ZIP](https://github.com/startopenapi-glitch/m-geo/archive/refs/heads/main.zip)：需要按下文自行安装依赖并构建。该源码快照不含数据库、模型密钥或试点商品资料。
-- [0.15.0 源码说明与已知限制](docs/release-0.15.0.md)。
+- [主分支源码 ZIP](https://github.com/startopenapi-glitch/m-geo/archive/refs/heads/main.zip)：需要按下文自行安装依赖并构建。该源码快照不含数据库、模型密钥或试点商品资料。
+- [0.21.0 功能与已知限制](docs/release-0.21.0.md)。
 
 ## 开发与验证
 
@@ -40,7 +40,7 @@ cargo clippy --locked --manifest-path src-tauri/Cargo.toml --features desktop --
 pnpm tauri dev
 ```
 
-当前分支的 **0.21.0 本地候选**新增 P0 接入演练：请求模式隔离、模拟预算、独立发布批准、模拟 CMS 回执／对账／回滚和静态页面检查，见 [0.21.0 本地候选说明](docs/release-0.21.0.md)。此候选尚未推送或发布 Release，独立验收不改变正式安装。
+**0.21.0** 新增 P0 接入演练：请求模式隔离、模拟预算、独立发布批准、模拟 CMS 回执／对账／回滚和静态页面检查，见 [0.21.0 本地候选说明](docs/release-0.21.0.md)。本版本尚未发布 Release 安装包。
 
 0.20.0 新增持久本地自动化与模拟证据包，范围和操作说明见 [0.20.0 本地候选说明](docs/release-0.20.0.md)。
 
