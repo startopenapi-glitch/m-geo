@@ -16,9 +16,17 @@ impl KeyStore for MemoryKeys {
         Ok(())
     }
 }
+fn fake_response(text: &str) -> TransportResponse {
+    TransportResponse {
+        text: text.into(),
+        model: "deepseek-chat".into(),
+        provider_request_id: None,
+        citations: vec![],
+    }
+}
 struct FakeTransport {
     delay: Duration,
-    answer: Result<String, TransportError>,
+    answer: Result<TransportResponse, TransportError>,
     calls: AtomicUsize,
 }
 impl Transport for FakeTransport {
@@ -43,7 +51,7 @@ fn fixture(delay_ms: u64) -> (Arc<Mutex<Connection>>, Services, Arc<FakeTranspor
         .unwrap();
     let transport = Arc::new(FakeTransport {
         delay: Duration::from_millis(delay_ms),
-        answer: Ok("候选事实".into()),
+        answer: Ok(fake_response("候选事实")),
         calls: AtomicUsize::new(0),
     });
     (
@@ -92,6 +100,43 @@ fn rejects_insecure_or_credential_bearing_urls() {
         assert!(validate_settings(base, "model").is_err(), "accepted {base}");
     }
     assert!(validate_settings("https://api.deepseek.com/v1", "deepseek-chat").is_ok());
+}
+
+#[tokio::test]
+async fn settings_read_reports_reference_presence_without_accessing_credentials() {
+    struct UnavailableKeys;
+    impl KeyStore for UnavailableKeys {
+        fn get(&self, _: &str) -> Result<Option<String>, String> {
+            Err("settings must not read the credential store".into())
+        }
+        fn set(&self, _: &str, _: &str) -> Result<(), String> {
+            panic!("settings must not write credentials")
+        }
+        fn clear(&self, _: &str) -> Result<(), String> {
+            panic!("settings must not clear credentials")
+        }
+    }
+    let (db, mut services, transport, _) = fixture(0);
+    services.keys = Arc::new(UnavailableKeys);
+    for (reference, configured) in [
+        (Some("test-key-ref"), true),
+        (None, false),
+        (Some(""), false),
+    ] {
+        db.lock()
+            .unwrap()
+            .execute("UPDATE ai_settings SET key_ref=?1", [reference])
+            .unwrap();
+        let value = handle_with(db.clone(), "ai.settings.get", json!({}), services.clone())
+            .await
+            .unwrap();
+        assert_eq!(value["hasKey"], configured);
+        assert_eq!(value["keyReferenceConfigured"], configured);
+        assert_eq!(value["baseUrl"], "https://api.deepseek.com/v1");
+        assert_eq!(value["model"], "deepseek-chat");
+        assert!(!value.to_string().contains("test-key-ref"));
+    }
+    assert_eq!(transport.calls.load(Ordering::SeqCst), 0);
 }
 #[test]
 fn interrupted_jobs_are_preserved_on_restart() {
@@ -321,7 +366,7 @@ async fn credential_cannot_be_saved_inside_frontend_visible_settings() {
         keys,
         transport: Arc::new(FakeTransport {
             delay: Duration::ZERO,
-            answer: Ok("文本".into()),
+            answer: Ok(fake_response("文本")),
             calls: AtomicUsize::new(0),
         }),
     };
@@ -688,7 +733,9 @@ async fn complete_mock_model_workflow_survives_backup_restore_and_reopen() {
     let keys = Arc::new(MemoryKeys::default());
     let transport = Arc::new(FakeTransport {
         delay: Duration::ZERO,
-        answer: Ok("测试商品容量为 500mL。依据：虚构规格表。仅用于软件验收。".into()),
+        answer: Ok(fake_response(
+            "测试商品容量为 500mL。依据：虚构规格表。仅用于软件验收。",
+        )),
         calls: AtomicUsize::new(0),
     });
     let services = Services {
@@ -744,14 +791,18 @@ async fn complete_mock_model_workflow_survives_backup_restore_and_reopen() {
     let draft = &snapshot["drafts"][0];
     assert_eq!(draft["generationMode"], "ai");
     assert!(draft["reviewedAt"].is_null());
-    call(
+    let reviewed = call(
+        "draft.save",
+        json!({"brandId":b,"id":draft["id"],"expectedRevision":1,"title":draft["title"],"body":draft["body"],"claims":[{"id":uuid::Uuid::new_v4().to_string(),"text":"测试商品容量为 500mL。","factId":"capacity"}]}),
+    );
+    let reviewed = call(
         "draft.review",
-        json!({"brandId":b,"id":draft["id"],"expectedRevision":1}),
+        json!({"brandId":b,"id":draft["id"],"expectedRevision":reviewed["revision"]}),
     );
     for format in ["markdown", "html"] {
         let exported = call(
             "draft.export",
-            json!({"brandId":b,"id":draft["id"],"expectedRevision":1,"format":format}),
+            json!({"brandId":b,"id":draft["id"],"expectedRevision":reviewed["revision"],"format":format}),
         );
         let content = exported["content"].as_str().unwrap();
         assert!(content.contains("500mL"));
@@ -759,7 +810,7 @@ async fn complete_mock_model_workflow_survives_backup_restore_and_reopen() {
             assert!(!content.contains(secret));
         }
     }
-    let publication = json!({"brandId":b,"draftId":draft["id"],"expectedRevision":1,"channel":"隔离测试登记","url":"https://example.com/mgeo-audit","publishedAt":"2026-10-23T05:00:00Z","note":"没有实际发布"});
+    let publication = json!({"brandId":b,"draftId":draft["id"],"expectedRevision":reviewed["revision"],"channel":"隔离测试登记","url":"https://example.com/mgeo-audit","publishedAt":"2026-10-23T05:00:00Z","note":"没有实际发布"});
     let first = call("publication.add", publication.clone());
     assert_eq!(call("publication.add", publication)["id"], first["id"]);
     for platform in ["doubao", "yuanbao", "qianwen", "baidu"] {
@@ -822,4 +873,288 @@ async fn complete_mock_model_workflow_survives_backup_restore_and_reopen() {
             .len(),
         2
     );
+}
+
+fn monitor_fixture() -> (
+    Arc<Mutex<Connection>>,
+    Services,
+    Arc<FakeTransport>,
+    String,
+    Value,
+    Value,
+    Value,
+) {
+    let (db, services, transport, brand) = fixture(0);
+    let mut connection = db.lock().unwrap();
+    let product = crate::core::handle(
+        &mut connection,
+        "product.save",
+        json!({"brandId":brand,"name":"虚构商品","sku":"FICTION-001","category":"测试","sourceText":"RAW_PRIVATE_SENTINEL","privateNotes":"NOTE_PRIVATE_SENTINEL","facts":[
+            {"id":"public","label":"容量","value":"500mL","source":"虚构公开规格表","visibility":"public","validUntil":null},
+            {"id":"private","label":"成本","value":"FACT_PRIVATE_SENTINEL","source":"内部","visibility":"private","validUntil":null}
+        ]}),
+    )
+    .unwrap();
+    let product = crate::core::handle(
+        &mut connection,
+        "product.confirm",
+        json!({"brandId":brand,"id":product["id"],"expectedRevision":product["revision"]}),
+    )
+    .unwrap();
+    let question = crate::core::handle(
+        &mut connection,
+        "question.save",
+        json!({"brandId":brand,"productId":product["id"],"text":"家用容量如何选择？","intent":"selection","origin":"customer","source":"虚构固定问题","branded":false,"confirmed":true}),
+    )
+    .unwrap();
+    let campaign = crate::core::handle(
+        &mut connection,
+        "campaign.create",
+        json!({"brandId":brand,"name":"虚构真实监测计划","evidenceMode":"recorded","questionIds":[question["id"]],"platforms":["doubao"],"modelLabel":"deepseek-chat","searchMode":"API；未联网","context":"固定新对话；仅公开资料","repetitions":2}),
+    )
+    .unwrap();
+    drop(connection);
+    (db, services, transport, brand, product, question, campaign)
+}
+fn monitor_input(brand: &str, product: &Value, question: &Value, campaign: &Value) -> Value {
+    json!({"brandId":brand,"campaignId":campaign["id"],"productId":product["id"],"questionId":question["id"],"platform":"doubao","phase":"baseline","repetition":1})
+}
+
+#[tokio::test]
+async fn monitor_preparation_is_deterministic_and_contains_only_public_facts() {
+    let (db, services, transport, brand, product, question, campaign) = monitor_fixture();
+    let input = monitor_input(&brand, &product, &question, &campaign);
+    let first = handle_with(
+        db.clone(),
+        "ai.monitor.prepare",
+        input.clone(),
+        services.clone(),
+    )
+    .await
+    .unwrap();
+    let second = handle_with(db, "ai.monitor.prepare", input, services)
+        .await
+        .unwrap();
+    assert_eq!(first["preparationHash"], second["preparationHash"]);
+    assert_eq!(first["surface"], "api");
+    assert_eq!(first["evidenceMode"], "recorded");
+    assert_eq!(first["assessment"]["campaignId"], campaign["id"]);
+    assert_eq!(first["configVersion"], 1);
+    assert!(first["prompt"].as_str().unwrap().contains("500mL"));
+    for sentinel in [
+        "RAW_PRIVATE_SENTINEL",
+        "NOTE_PRIVATE_SENTINEL",
+        "FACT_PRIVATE_SENTINEL",
+        "fake-secret",
+    ] {
+        assert!(!first.to_string().contains(sentinel));
+    }
+    assert_eq!(transport.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn monitor_consent_and_valid_credential_are_required_before_job_or_transport() {
+    let (db, services, transport, brand, product, question, campaign) = monitor_fixture();
+    let prepared = handle_with(
+        db.clone(),
+        "ai.monitor.prepare",
+        monitor_input(&brand, &product, &question, &campaign),
+        services.clone(),
+    )
+    .await
+    .unwrap();
+    let start = json!({"brandId":brand,"preparationHash":prepared["preparationHash"]});
+    assert!(handle_with(
+        db.clone(),
+        "ai.monitor.start",
+        start.clone(),
+        services.clone()
+    )
+    .await
+    .is_err());
+    services.keys.clear("test-key-ref").unwrap();
+    let mut with_consent = start;
+    with_consent["consent"] = json!(true);
+    assert!(handle_with(
+        db.clone(),
+        "ai.monitor.start",
+        with_consent,
+        services.clone()
+    )
+    .await
+    .is_err());
+    assert_eq!(transport.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        handle_with(db, "ai.jobs", json!({"brandId":brand}), services)
+            .await
+            .unwrap(),
+        json!([])
+    );
+}
+
+#[tokio::test]
+async fn monitor_repeated_start_uses_preparation_identity_without_retry() {
+    let (db, services, transport, brand, product, question, campaign) = monitor_fixture();
+    let prepared = handle_with(
+        db.clone(),
+        "ai.monitor.prepare",
+        monitor_input(&brand, &product, &question, &campaign),
+        services.clone(),
+    )
+    .await
+    .unwrap();
+    let start =
+        json!({"brandId":brand,"preparationHash":prepared["preparationHash"],"consent":true});
+    let first = handle_with(
+        db.clone(),
+        "ai.monitor.start",
+        start.clone(),
+        services.clone(),
+    )
+    .await
+    .unwrap();
+    let second = handle_with(db.clone(), "ai.monitor.start", start, services.clone())
+        .await
+        .unwrap();
+    assert_eq!(first["id"], second["id"]);
+    let finished = wait_job(db.clone(), &services, &brand, first["id"].as_str().unwrap()).await;
+    assert_eq!(
+        finished["status"], "succeeded",
+        "monitor job failed: {finished}"
+    );
+    assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
+    let mut connection = db.lock().unwrap();
+    let snapshot = crate::core::handle(
+        &mut connection,
+        "workspace.snapshot",
+        json!({"brandId":brand}),
+    )
+    .unwrap();
+    assert_eq!(snapshot["observations"].as_array().unwrap().len(), 1);
+    let saved = &snapshot["observations"][0];
+    for (key, expected) in [
+        ("surface", "api"),
+        ("evidenceMode", "recorded"),
+        ("sourceKind", "real_api"),
+        ("transport", "real_api"),
+        ("accuracy", "unknown"),
+    ] {
+        assert_eq!(saved[key], expected);
+    }
+    assert_eq!(saved["preparationHash"], prepared["preparationHash"]);
+    assert_eq!(saved["responseModel"], "deepseek-chat");
+    crate::core::validate_database_detailed(&connection)
+        .unwrap_or_else(|error| panic!("{error}: {saved}"));
+    // Neither a frontend payload nor an unregistered internal commit can
+    // manufacture native API evidence around the preparation boundary.
+    assert!(crate::core::handle(
+        &mut connection,
+        "observation.add",
+        json!({"brandId":brand,"sourceKind":"real_api"}),
+    )
+    .is_err());
+    assert!(crate::core::handle(
+        &mut connection,
+        "internal.monitor.commit",
+        json!({"brandId":brand,"surface":"api","evidenceMode":"recorded","sourceKind":"real_api","transport":"real_api","accuracy":"unknown","preparationHash":"0".repeat(64)}),
+    )
+    .is_err());
+}
+
+#[tokio::test]
+async fn monitor_authentication_failure_is_not_saved_or_retried() {
+    let (db, mut services, _, brand, product, question, campaign) = monitor_fixture();
+    let transport = Arc::new(FakeTransport {
+        delay: Duration::ZERO,
+        answer: Err(TransportError::Authentication),
+        calls: AtomicUsize::new(0),
+    });
+    services.transport = transport.clone();
+    let prepared = handle_with(
+        db.clone(),
+        "ai.monitor.prepare",
+        monitor_input(&brand, &product, &question, &campaign),
+        services.clone(),
+    )
+    .await
+    .unwrap();
+    let started = handle_with(
+        db.clone(),
+        "ai.monitor.start",
+        json!({"brandId":brand,"preparationHash":prepared["preparationHash"],"consent":true}),
+        services.clone(),
+    )
+    .await
+    .unwrap();
+    let job = wait_job(
+        db.clone(),
+        &services,
+        &brand,
+        started["id"].as_str().unwrap(),
+    )
+    .await;
+    assert_eq!(job["status"], "failed");
+    assert!(job["resultText"].is_null());
+    assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
+    let snapshot = crate::core::handle(
+        &mut db.lock().unwrap(),
+        "workspace.snapshot",
+        json!({"brandId":brand}),
+    )
+    .unwrap();
+    assert_eq!(snapshot["observations"], json!([]));
+}
+
+#[test]
+fn response_and_monitor_payload_preserve_real_metadata_without_accuracy_claims() {
+    let parsed = parse_response(
+        r#"{"id":"provider-request-1","model":"deepseek-chat","citations":["https://example.com/evidence"],"choices":[{"message":{"content":"虚构商品容量为 500mL。"}}]}"#.as_bytes(),
+        "fake-secret",
+    )
+    .unwrap();
+    assert_eq!(
+        parsed.provider_request_id.as_deref(),
+        Some("provider-request-1")
+    );
+    assert_eq!(parsed.citations, ["https://example.com/evidence"]);
+    let context = json!({
+        "brandId":"b","productId":"p","questionId":"q","campaignId":"c","platform":"doubao","phase":"baseline",
+        "modelLabel":"deepseek-chat","searchMode":"API；未联网","testedAt":"2026-10-24T00:00:00.987654Z",
+        "preparationHash":"prep","publicSnapshot":{"brandName":"测试品牌","productName":"虚构商品","sku":"FICTION-001"},
+        "assessment":{"campaignId":"c","repetition":1,"context":"固定条件","recommendation":"unknown","rank":null,"competitors":""}
+    });
+    let (input, identity) = monitor_observation(&context, &parsed).unwrap();
+    assert_eq!(input["testedAt"], "2026-10-24T00:00:00Z");
+    assert_eq!(input["surface"], "api");
+    assert_eq!(input["sourceKind"], "real_api");
+    assert_eq!(input["transport"], "real_api");
+    assert_eq!(input["evidenceMode"], "recorded");
+    assert_eq!(input["mentioned"], true);
+    assert_eq!(input["accuracy"], "unknown");
+    assert_eq!(input["citations"], json!(["https://example.com/evidence"]));
+    assert_eq!(input["providerRequestId"], "provider-request-1");
+    assert_eq!(monitor_observation(&context, &parsed).unwrap().1, identity);
+    for invalid in [
+        r#"{"id":"fake-secret","model":"deepseek-chat","choices":[{"message":{"content":"回答"}}]}"#.as_bytes(),
+        r#"{"model":"fake-secret","choices":[{"message":{"content":"回答"}}]}"#.as_bytes(),
+        r#"{"model":"deepseek-chat","citations":["https://example.com/fake-secret"],"choices":[{"message":{"content":"回答"}}]}"#.as_bytes(),
+    ] {
+        assert!(parse_response(invalid, "fake-secret").is_err());
+    }
+}
+
+#[tokio::test]
+async fn simulated_campaign_cannot_be_used_for_real_monitoring() {
+    let (db, services, transport, brand, product, question, campaign) = monitor_fixture();
+    let mut input = monitor_input(&brand, &product, &question, &campaign);
+    input["campaignId"] = json!(crate::core::handle(
+        &mut db.lock().unwrap(),
+        "campaign.create",
+        json!({"brandId":brand,"name":"模拟计划","evidenceMode":"simulated","questionIds":[question["id"]],"platforms":["doubao"],"modelLabel":"deepseek-chat","searchMode":"模拟","context":"模拟条件","repetitions":1}),
+    )
+    .unwrap()["id"]);
+    assert!(handle_with(db, "ai.monitor.prepare", input, services)
+        .await
+        .is_err());
+    assert_eq!(transport.calls.load(Ordering::SeqCst), 0);
 }

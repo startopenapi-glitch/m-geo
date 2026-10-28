@@ -66,7 +66,7 @@ fn confirmed_public_flow_and_immutable_publication() {
     let edited = call(
         &mut c,
         "draft.save",
-        json!({"brandId":b["id"],"id":d["id"],"expectedRevision":d["revision"],"title":"编辑","body":"<script>alert(1)</script>新正文"}),
+        json!({"brandId":b["id"],"id":d["id"],"expectedRevision":d["revision"],"title":"编辑","body":"<script>alert(1)</script>新正文","claims":[{"id":id(),"text":"<script>alert(1)</script>新正文","factId":"f1"}]}),
     );
     assert!(edited["reviewedAt"].is_null());
     assert!(handle(&mut c,"draft.export",json!({"brandId":b["id"],"id":edited["id"],"expectedRevision":edited["revision"],"format":"html"})).is_err());
@@ -500,7 +500,7 @@ fn snapshot_marks_truncation_and_future_schema_refuses_writes() {
     assert_eq!(s["products"].as_array().unwrap().len(), 1000);
     assert_eq!(s["truncated"], true);
     let mut future = Connection::open_in_memory().unwrap();
-    future.execute_batch("CREATE TABLE m_core_meta(id INTEGER PRIMARY KEY,schema_version INTEGER);INSERT INTO m_core_meta VALUES(1,6)").unwrap();
+    future.execute_batch("CREATE TABLE m_core_meta(id INTEGER PRIMARY KEY,schema_version INTEGER);INSERT INTO m_core_meta VALUES(1,11)").unwrap();
     assert!(initialize(&mut future).is_err());
     let count: i64 = future
         .query_row(
@@ -1010,7 +1010,7 @@ fn commerce_v1_backup_migrates_without_losing_rows_and_v2_roundtrips() {
     crate::ai::initialize(&mut legacy).unwrap();
     let b = brand(&mut legacy, "旧版资料");
     let p = product(&mut legacy, &b);
-    legacy.execute_batch("DROP TABLE m_optimization_plans; DROP TABLE m_local_jobs; DROP TABLE m_attribution_datasets; DROP TABLE m_campaigns; UPDATE m_core_meta SET schema_version=1; PRAGMA user_version=1;").unwrap();
+    legacy.execute_batch("DROP TABLE m_p0_workflows; DROP TABLE m_p0_policy; DROP TABLE m_offline_workflows; DROP TABLE m_question_research; DROP TABLE m_media; DROP TABLE m_automation_tasks; DROP TABLE m_assets; DROP TABLE m_knowledge_reviews; DROP TABLE m_knowledge_documents; DROP TABLE m_optimization_plans; DROP TABLE m_local_jobs; DROP TABLE m_attribution_datasets; DROP TABLE m_campaigns; UPDATE m_core_meta SET schema_version=1; PRAGMA user_version=1;").unwrap();
     let bytes = crate::backup::encrypt_snapshot(&legacy, "fictional-test-password").unwrap();
     let mut target = crate::runtime::open_database(std::path::Path::new(":memory:")).unwrap();
     crate::backup::restore_snapshot(&mut target, &bytes, "fictional-test-password").unwrap();
@@ -1104,7 +1104,7 @@ fn commerce_site_escapes_script_delimiters_in_jsonld_and_body() {
 fn commerce_complete_fixture_loop_with_240_observations_export_and_restore() {
     let mut c = db();
     crate::ai::initialize(&mut c).unwrap();
-    c.pragma_update(None, "user_version", 5).unwrap();
+    c.pragma_update(None, "user_version", 10).unwrap();
     let b = brand(&mut c, "虚构商品验收（非真实效果）");
     let mut products = vec![];
     let mut drafts = vec![];
@@ -1255,7 +1255,7 @@ fn review_fix_padded_fact_ids_cannot_bypass_commerce_validation() {
 fn review_fix_multibyte_campaign_never_breaks_backup() {
     let mut c = db();
     crate::ai::initialize(&mut c).unwrap();
-    c.pragma_update(None, "user_version", 5).unwrap();
+    c.pragma_update(None, "user_version", 10).unwrap();
     let b = brand(&mut c, "长问题测试");
     let p = product(&mut c, &b);
     let mut ids = vec![];
@@ -1322,7 +1322,7 @@ fn review_fix_annotations_can_change_without_changing_raw_evidence_or_submission
     assert_eq!(second["assessmentHistory"].as_array().unwrap().len(), 2);
     validate_database(&c).unwrap();
     crate::ai::initialize(&mut c).unwrap();
-    c.pragma_update(None, "user_version", 5).unwrap();
+    c.pragma_update(None, "user_version", 10).unwrap();
     let bytes = crate::backup::encrypt_snapshot(&c, "fictional-test-password").unwrap();
     let mut restored = crate::runtime::open_database(std::path::Path::new(":memory:")).unwrap();
     crate::backup::restore_snapshot(&mut restored, &bytes, "fictional-test-password").unwrap();
@@ -1401,4 +1401,94 @@ fn phase3_evidence_mode_survives_backup_and_reports_without_reclassifying_histor
         .unwrap()
         .get("evidenceMode")
         .is_none());
+}
+
+#[test]
+fn fact_review_gates_confirmation_and_native_content_changes() {
+    let mut c = db();
+    let b = brand(&mut c, "虚构事实审核品牌");
+    let p = product(&mut c, &b);
+    assert_eq!(p["facts"][0]["reviewStatus"], "approved");
+    assert!(p["facts"][0]["reviewedAt"].is_string());
+    assert!(p["facts"][0]["updatedAt"].is_string());
+
+    let mut pending = p.clone();
+    pending["expectedRevision"] = pending["revision"].clone();
+    pending["facts"][0]["reviewStatus"] = json!("pending");
+    pending["facts"][0]["reviewedAt"] = Value::Null;
+    let pending = call(&mut c, "product.save", pending);
+    let error = handle(
+        &mut c,
+        "product.confirm",
+        json!({"brandId":b["id"],"id":pending["id"],"expectedRevision":pending["revision"]}),
+    )
+    .unwrap_err();
+    assert!(error.contains("尚未审核通过"));
+
+    let mut approved = pending.clone();
+    approved["expectedRevision"] = approved["revision"].clone();
+    approved["facts"][0]["reviewStatus"] = json!("approved");
+    let approved = call(&mut c, "product.save", approved);
+    assert!(approved["facts"][0]["reviewedAt"].is_string());
+    let confirmed = confirm(&mut c, &approved);
+
+    // Even a payload that forges approval cannot keep changed content approved.
+    let mut changed = confirmed.clone();
+    changed["expectedRevision"] = changed["revision"].clone();
+    changed["facts"][0]["value"] = json!("2L");
+    changed["facts"][0]["source"] = json!("另一份虚构规格表");
+    changed["facts"][0]["reviewStatus"] = json!("approved");
+    let changed = call(&mut c, "product.save", changed);
+    assert_eq!(changed["facts"][0]["reviewStatus"], "pending");
+    assert!(changed["facts"][0]["reviewedAt"].is_null());
+    assert!(handle(
+        &mut c,
+        "product.confirm",
+        json!({"brandId":b["id"],"id":changed["id"],"expectedRevision":changed["revision"]})
+    )
+    .is_err());
+
+    let mut reapproved = changed.clone();
+    reapproved["expectedRevision"] = reapproved["revision"].clone();
+    reapproved["facts"][0]["reviewStatus"] = json!("approved");
+    let reapproved = call(&mut c, "product.save", reapproved);
+    let metadata = reapproved["facts"][0].clone();
+    let mut renamed = reapproved.clone();
+    renamed["expectedRevision"] = renamed["revision"].clone();
+    renamed["name"] = json!("仅修改商品名称");
+    let renamed = call(&mut c, "product.save", renamed);
+    assert_eq!(renamed["facts"][0], metadata);
+    validate_database(&c).unwrap();
+}
+
+#[test]
+fn legacy_facts_remain_readable_without_fabricating_review_timestamps() {
+    let mut c = db();
+    let b = brand(&mut c, "虚构历史品牌");
+    let p = product(&mut c, &b);
+    let mut legacy = p.clone();
+    for fact in legacy["facts"].as_array_mut().unwrap() {
+        let object = fact.as_object_mut().unwrap();
+        object.remove("reviewStatus");
+        object.remove("reviewedAt");
+        object.remove("updatedAt");
+    }
+    c.execute(
+        "UPDATE m_products SET data=?1 WHERE id=?2",
+        params![legacy.to_string(), legacy["id"].as_str()],
+    )
+    .unwrap();
+    validate_database(&c).unwrap();
+    let confirmed = confirm(&mut c, &legacy);
+    assert!(confirmed["facts"][0].get("reviewStatus").is_none());
+
+    let mut renamed = confirmed.clone();
+    renamed["expectedRevision"] = renamed["revision"].clone();
+    renamed["name"] = json!("历史商品改名");
+    let renamed = call(&mut c, "product.save", renamed);
+    assert!(renamed["facts"][0].get("reviewStatus").is_none());
+    assert!(renamed["facts"][0].get("reviewedAt").is_none());
+    assert!(renamed["facts"][0].get("updatedAt").is_none());
+    confirm(&mut c, &renamed);
+    validate_database(&c).unwrap();
 }

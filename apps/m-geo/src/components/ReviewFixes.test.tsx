@@ -8,7 +8,7 @@ import {now} from './ui';
 import {draftCanExport} from './draftEligibility';
 const brand:Brand={id:'a',name:'A',createdAt:''};
 const product:Product={id:'p',brandId:'a',name:'P',sku:'one',category:'',officialUrl:'',sourceText:'',privateNotes:'',revision:1,confirmedAt:'2026-01-01T00:00:00Z',updatedAt:'',facts:[{id:'f',label:'size',value:'500ml',source:'official',visibility:'public',validUntil:null}]};
-const draft:Draft={id:'d',brandId:'a',productId:'p',questionId:null,kind:'faq',title:'Title',body:'Stored body',revision:1,sourceRevision:1,generationMode:'local',reviewedAt:'2026-01-01T00:00:00Z',createdAt:''};
+const draft:Draft={id:'d',brandId:'a',productId:'p',questionId:null,kind:'faq',title:'Title',body:'Stored body',claims:[{id:'c',text:'Stored body',factId:'f'}],revision:1,sourceRevision:1,generationMode:'local',reviewedAt:'2026-01-01T00:00:00Z',createdAt:''};
 const data:WorkspaceSnapshot={products:[product],drafts:[draft],questions:[],publications:[],observations:[]};
 afterEach(()=>{cleanup();setTestTransport(undefined);vi.restoreAllMocks();vi.useRealTimers()});
 it('refreshes exactly on running-to-succeeded transition, before opening the new draft',async()=>{
@@ -51,6 +51,10 @@ it('uses inclusive UTC expiry dates and ignores expired private-only material',(
  const expiring={...data,products:[{...product,facts:[{...product.facts[0],validUntil:'2026-10-17'},{...product.facts[0],id:'private',visibility:'private' as const,validUntil:'2000-01-01'}]}]};
  expect(draftCanExport(expiring,draft,'a',new Date('2026-10-17T23:59:59.999Z'))).toBe(true);
  expect(draftCanExport(expiring,draft,'a',new Date('2026-10-18T00:00:00Z'))).toBe(false);
+});
+it.each(['pending','rejected'] as const)('blocks export when linked evidence is %s',reviewStatus=>{
+ const blocked={...data,products:[{...product,facts:[{...product.facts[0],reviewStatus,reviewedAt:null,updatedAt:'2026-10-24T00:00:00Z'}]}]};
+ expect(draftCanExport(blocked,draft,'a',new Date('2026-10-24T00:00:00Z'))).toBe(false);
 });
 it('does not write delayed exported content after its brand page unmounts',async()=>{
  const writeText=vi.fn(async()=>{});Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText}});let finish!:(v:any)=>void;

@@ -9,15 +9,15 @@ Native single command `dispatch(action: String,payload: Value)->Result<Value,Str
 - `brand.list` {} -> Brand[]
 - `brand.create` {name} -> Brand
 - `workspace.snapshot` {brandId} -> WorkspaceSnapshot {products,questions,drafts,publications,observations}; all records belong to brand. First version bounded 1000 products, 5000 dependent rows each, explicit truncation indication if applied rather than silent truncation.
-- `product.save` {brandId,id?,expectedRevision?,name,sku,category,officialUrl,sourceText,privateNotes,facts:Fact[]} -> Product. update clears confirmedAt and increments revision.
-- `product.confirm` {brandId,id,expectedRevision} -> Product. Required at least one valid public evidenced fact.
+- `product.save` {brandId,id?,expectedRevision?,name,sku,category,officialUrl,sourceText,privateNotes,facts:Fact[]} -> Product. update clears confirmedAt and increments revision. New UI facts start with `reviewStatus:'pending'`; every fact carries `reviewedAt` and `updatedAt`. Native code forces pending and clears reviewedAt when label/value/source/visibility/validUntil changes, even if the payload claims approval. Review-only changes preserve the content updatedAt.
+- `product.confirm` {brandId,id,expectedRevision} -> Product. Every public fact must be approved, sourced and current. Pre-0.16 facts without review fields retain their historical product-confirmation compatibility and do not acquire fabricated review timestamps; any content change moves them into the explicit review registry.
 - `question.save` {brandId,productId,text,intent,origin,source,branded,confirmed} -> Question (dedup by normalized text within product).
 - `question.confirm` {brandId,id,confirmed} -> Question
 - `question.suggest` {brandId,productId} -> Question[] (template suggestions never real search data)
-- `draft.generateLocal` {brandId,productId,kind,questionId?} -> Draft
-- `draft.save` {brandId,id,expectedRevision,title,body} -> Draft (clears review)
-- `draft.review` {brandId,id,expectedRevision} -> Draft (checks product confirmation/version/expiry)
-- `draft.export` {brandId,id,expectedRevision,format:'markdown'|'html'} -> {fileName,content} (review/current required, escape HTML no script)
+- `draft.generateLocal` {brandId,productId,kind,questionId?} -> Draft. Local template generation records `claims: [{id,text,factId}]` for each public fact in the source snapshot. AI and legacy drafts start with an empty claim list and require explicit human mapping.
+- `draft.save` {brandId,id,expectedRevision,title,body,claims} -> Draft (clears review and any prior evidence snapshots). Claim text must be an exact substring of the body at review; claim IDs are unique UUIDs and each fact ID is bounded. Native parsing strips client-supplied `evidence` instead of trusting it.
+- `draft.review` {brandId,id,expectedRevision} -> Draft (checks product confirmation/version/expiry and at least one claim linked to an approved, current, public, sourced fact). Empty, unknown, unapproved, private, expired or non-body claims are rejected. Success freezes `evidence:{snapshotVersion:1,factId,label,value,source,validUntil,factReviewedAt,factUpdatedAt}` inside each claim. SQLite schema remains 5; pre-0.17 reviewed drafts without snapshots remain readable.
+- `draft.export` {brandId,id,expectedRevision,format:'markdown'|'html'} -> {fileName,content} (revalidates review/evidence/current state and any frozen snapshot against current approved facts, escapes HTML without scripts, and appends the frozen public claim/fact/source evidence). Missing, mismatched or tampered snapshots block outward actions; private facts and local paths are not evidence sources.
 - `publication.add` {brandId,draftId,expectedRevision,channel,url,publishedAt,note} -> Publication (review/current required, immutable snapshot)
 - `observation.add` {brandId,productId,questionId,platform,surface,phase,modelLabel,searchMode,testedAt,answer,mentioned,accuracy,citedUrl,evidenceNote} -> Observation (confirmed question, brand enforced, query snapshot and branded from question, URL/choice validation)
 - `import.csv` {brandId,content,confirm:true} -> {created,skipped}. exact headers 品牌,商品名称,SKU,类目,商品链接. All rows must match selected brand, atomically reject cross-brand/invalid. 200 rows/2MB.

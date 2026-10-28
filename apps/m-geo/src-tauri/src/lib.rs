@@ -7,6 +7,8 @@ pub mod core;
 mod desktop;
 pub mod experiment_inspection_session;
 pub mod files;
+#[cfg(any(feature = "desktop", test))]
+mod offline_worker;
 pub mod runtime;
 pub mod site_inspection_session;
 pub mod site_package;

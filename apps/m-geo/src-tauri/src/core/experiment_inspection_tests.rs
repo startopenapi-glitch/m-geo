@@ -227,6 +227,43 @@ fn strict_json_and_brand_boundary() {
     assert!(inspect_experiment_report(B, &p).is_err());
 }
 #[test]
+fn public_errors_distinguish_brand_evidence_and_limits() {
+    let (s, o) = fixture(false);
+    let p = package(&s, &o);
+    let wrong = "99999999-9999-4999-8999-999999999999";
+    let brand_error = "实验包与当前品牌不匹配，请切换到导出时的品牌后重试";
+    let evidence_error = "实验包原始证据未通过校验，可能已被修改；请使用未修改的原始导出包";
+    let limit_error = "实验包超过处理上限，请减少固定问题、平台、轮次或样本后重新导出";
+    assert_eq!(
+        inspect_experiment_report(wrong, &p).err().unwrap(),
+        brand_error
+    );
+
+    let mut invalid_json = p.clone();
+    invalid_json["files"][1]["content"] = json!("{");
+    let error = inspect_experiment_report(B, &invalid_json).err().unwrap();
+    assert!(error.starts_with(evidence_error));
+    assert!(error.contains("JSON 无效或含重复字段"));
+
+    let mut too_many = o.clone();
+    too_many.extend(o);
+    assert_eq!(
+        inspect_experiment_report(B, &package(&s, &too_many))
+            .err()
+            .unwrap(),
+        limit_error
+    );
+    for error in [
+        inspect_experiment_report(wrong, &p).err().unwrap(),
+        inspect_experiment_report(B, &invalid_json).err().unwrap(),
+        inspect_experiment_report(B, &package(&s, &too_many))
+            .err()
+            .unwrap(),
+    ] {
+        assert!(!error.contains("PRIVATE"));
+    }
+}
+#[test]
 fn raw_unicode_and_csv_preservation() {
     let (s, mut o) = fixture(false);
     for raw in [

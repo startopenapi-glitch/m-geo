@@ -32,3 +32,13 @@ it('shows cancellation and authentication errors without restoring or keeping th
  expect(invoke.mock.calls.every(([a])=>a==='backup.inspect')).toBe(true);
  await waitFor(()=>expect(screen.getByRole('button',{name:'选择备份并只读校验'})).toBeDisabled());
 });
+
+it('shows persistent P0 workflow counts in a schema10 inspection',async()=>{
+ invoke.mockResolvedValueOnce({valid:true,sourceVersion:10,targetVersion:10,counts:{brands:1,products:1,datasets:0,localJobs:0,optimizationPlans:0,offlineWorkflows:2,p0Workflows:3},workspaceUnchanged:true});
+ render(<BackupInspector/>);
+ fireEvent.change(screen.getByLabelText('校验备份口令'),{target:{value:'fictional-passphrase'}});
+ fireEvent.click(screen.getByRole('button',{name:'选择备份并只读校验'}));
+ await screen.findByText('备份校验通过');
+ expect(screen.getByText(/接入演练 3/)).toBeInTheDocument();
+ expect(screen.getByText(/离线任务 2/)).toBeInTheDocument();
+});

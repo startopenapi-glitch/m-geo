@@ -209,14 +209,14 @@ fn attribution_schema2_backup_migrates_and_inconsistent_marker_rejects() {
     let mut old = crate::runtime::open_database(std::path::Path::new(":memory:")).unwrap();
     let b =
         handle(&mut old, "brand.create", json!({"name":"旧版虚构工作区"})).unwrap()["id"].clone();
-    old.execute_batch("DROP TABLE m_optimization_plans; DROP TABLE m_local_jobs; DROP TABLE m_attribution_datasets; UPDATE m_core_meta SET schema_version=2; PRAGMA user_version=2;").unwrap();
+    old.execute_batch("DROP TABLE m_p0_workflows; DROP TABLE m_p0_policy; DROP TABLE m_offline_workflows; DROP TABLE m_question_research; DROP TABLE m_media; DROP TABLE m_automation_tasks; DROP TABLE m_assets; DROP TABLE m_knowledge_reviews; DROP TABLE m_knowledge_documents; DROP TABLE m_optimization_plans; DROP TABLE m_local_jobs; DROP TABLE m_attribution_datasets; UPDATE m_core_meta SET schema_version=2; PRAGMA user_version=2;").unwrap();
     let bytes = crate::backup::encrypt_snapshot(&old, "phase5-migration-test").unwrap();
     let mut dest = crate::runtime::open_database(std::path::Path::new(":memory:")).unwrap();
     crate::backup::restore_snapshot(&mut dest, &bytes, "phase5-migration-test").unwrap();
     assert_eq!(
         dest.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        5
+        10
     );
     assert_eq!(
         handle(&mut dest, "attribution.list", json!({"brandId":b})).unwrap()["datasets"],

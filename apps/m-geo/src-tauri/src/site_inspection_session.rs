@@ -366,7 +366,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            5
+            10
         );
         assert_eq!(
             tables,
@@ -381,7 +381,7 @@ mod tests {
         assert_eq!(
             crate::backup::inspect_snapshot(&bytes, "fictional-phase8-only").unwrap()
                 ["targetVersion"],
-            5
+            10
         );
     }
 }
@@ -441,7 +441,7 @@ mod prior_acceptance {
         assert_eq!(
             crate::backup::inspect_snapshot(&backup, "fictional-phase8-legacy").unwrap()
                 ["targetVersion"],
-            5
+            10
         );
     }
 }

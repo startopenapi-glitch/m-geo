@@ -594,6 +594,7 @@ mod tests {
         .unwrap();
         let mut d = load(&c, "m_drafts", &b, d["id"].as_str().unwrap()).unwrap();
         d["body"] = json!("虚构说明 & <文本>");
+        d["claims"] = json!([{"id":id(),"text":"虚构说明 & <文本>","factId":"catalog:kind"}]);
         update(&c, "m_drafts", &d).unwrap();
         let d = handle(
             &mut c,

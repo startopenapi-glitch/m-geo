@@ -19,7 +19,7 @@ describe('M- GEO workspace',()=>{
   render(<App/>);
   fireEvent.change(await screen.findByLabelText('品牌名称'),{target:{value:'晴山'}});
   fireEvent.click(screen.getByRole('button',{name:'创建品牌'}));
-  expect(await screen.findByRole('heading',{name:'今天，从准确的资料开始'})).toBeInTheDocument();
+  expect(await screen.findByRole('heading',{name:'让 AI 准确理解你的商品'})).toBeInTheDocument();
   expect(screen.getByText('还没有商品资料')).toBeInTheDocument();
  });
  it('ignores a delayed response from a brand after switching',async()=>{
@@ -46,8 +46,8 @@ describe('M- GEO workspace',()=>{
    throw Error(action);
   });
   render(<App/>);
-  await screen.findByText('今天，从准确的资料开始');
-  fireEvent.click(screen.getByRole('button',{name:'商品资料'}));
+  await screen.findByText('让 AI 准确理解你的商品');
+  fireEvent.click(screen.getByRole('button',{name:'事实与证据'}));fireEvent.click(screen.getByRole('button',{name:'商品事实'}));
   fireEvent.click(await screen.findByRole('button',{name:/甲商品/}));
   fireEvent.change(screen.getByLabelText('商品名称'),{target:{value:'未保存的甲资料'}});
   fireEvent.change(screen.getByLabelText('当前品牌'),{target:{value:'b'}});
@@ -63,8 +63,8 @@ describe('M- GEO workspace',()=>{
    if(action==='ai.jobs')return [{id:'j',brandId:'a',productId:'p',kind:'faq',status,message:'',resultText:null,draftId:status==='succeeded'?'d':null,createdAt:''}] as T;
    throw Error(action);
   });
-  render(<App/>);await screen.findByText('今天，从准确的资料开始');
-  fireEvent.click(screen.getByRole('button',{name:'内容工作室'}));await screen.findByText('生成中');status='succeeded';
+  render(<App/>);await screen.findByText('让 AI 准确理解你的商品');
+  fireEvent.click(screen.getByRole('button',{name:'问题与内容'}));fireEvent.click(screen.getByRole('button',{name:'内容审核'}));await screen.findByText('生成中');status='succeeded';
   fireEvent.click(screen.getByRole('button',{name:'刷新'}));
   await waitFor(()=>expect(screen.getAllByText('工作区快照暂不可用').length).toBeGreaterThan(0));
   fireEvent.click(screen.getByRole('button',{name:'刷新'}));
@@ -80,7 +80,7 @@ describe('M- GEO workspace',()=>{
   });
   render(<App/>);await screen.findByText('资料读取失败 1');
   fireEvent.click(screen.getByRole('button',{name:'重试'}));await screen.findByText('资料读取失败 2');
-  fireEvent.click(screen.getByRole('button',{name:'重试'}));await screen.findByText('今天，从准确的资料开始');
+  fireEvent.click(screen.getByRole('button',{name:'重试'}));await screen.findByText('让 AI 准确理解你的商品');
   expect(reads).toBe(3);
  });
  it('shows a native failure and allows retry without demo data',async()=>{
@@ -107,19 +107,19 @@ describe('M- GEO workspace',()=>{
    if(action==='app.openRecoveryFolder'){expect(p).toEqual({});openedRecovery=true;return {ok:true} as T;}
    throw Error(action);
   });
-  render(<App/>);await screen.findByText('今天，从准确的资料开始');
-  fireEvent.click(screen.getByRole('button',{name:'设置'}));
+  render(<App/>);await screen.findByText('让 AI 准确理解你的商品');
+  fireEvent.click(screen.getByRole('button',{name:'数据与设置'}));
   fireEvent.change(await screen.findByLabelText('备份 / 恢复口令'),{target:{value:'restore-secret'}});
   fireEvent.click(screen.getByLabelText('我确认用所选备份替换当前整个工作区'));
   fireEvent.click(screen.getByRole('button',{name:'选择备份并恢复'}));
-  fireEvent.click(screen.getByRole('button',{name:'工作台'}));
+  fireEvent.click(screen.getByRole('button',{name:'首页'}));
   fireEvent.change(screen.getByLabelText('当前品牌'),{target:{value:'b'}});
   await act(async()=>{restored=true;finishRestore({restored:true,recoveryPath:'/local/recovery/pre-restore.sqlite'});});
   await screen.findByRole('option',{name:'恢复后的品牌'});
   expect(screen.queryByRole('option',{name:'乙品牌'})).not.toBeInTheDocument();
   expect((await screen.findAllByText('恢复后的商品')).length).toBeGreaterThan(0);
   expect(screen.getByText(/pre-restore\.sqlite/)).toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button',{name:'商品资料'}));
+  fireEvent.click(screen.getByRole('button',{name:'事实与证据'}));fireEvent.click(screen.getByRole('button',{name:'商品事实'}));
   expect(screen.getByText(/pre-restore\.sqlite/)).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button',{name:'打开快照目录'}));
   await screen.findByText('已请求打开恢复前快照目录');
@@ -144,7 +144,7 @@ describe('M- GEO workspace',()=>{
   expect(screen.getByRole('button',{name:'选择备份并恢复'})).toHaveFocus();
   await keyboard.keyboard('{Enter}');
   expect(await screen.findByRole('option',{name:'备份品牌'})).toBeInTheDocument();
-  expect(await screen.findByText('今天，从准确的资料开始')).toBeInTheDocument();
+  expect(await screen.findByText('让 AI 准确理解你的商品')).toBeInTheDocument();
   expect(screen.getByLabelText('工作区恢复状态')).toHaveFocus();
  });
  it.each(['cancel','failure'] as const)('locks the whole workspace from picker launch and unlocks after restore %s',async(outcome)=>{
@@ -158,21 +158,21 @@ describe('M- GEO workspace',()=>{
    if(action==='backup.restore')return await pending as T;
    throw Error(action);
   });
-  render(<App/>);await screen.findByText('今天，从准确的资料开始');
-  fireEvent.click(screen.getByRole('button',{name:'设置'}));
+  render(<App/>);await screen.findByText('让 AI 准确理解你的商品');
+  fireEvent.click(screen.getByRole('button',{name:'数据与设置'}));
   await screen.findByDisplayValue('deepseek-chat');
   fireEvent.change(screen.getByLabelText('备份 / 恢复口令'),{target:{value:'restore-secret'}});
   fireEvent.click(screen.getByLabelText('我确认用所选备份替换当前整个工作区'));
   fireEvent.click(screen.getByRole('button',{name:'选择备份并恢复'}));
   expect(screen.getByLabelText('备份 / 恢复口令')).toHaveValue('');
   expect(screen.getByLabelText('当前品牌')).toBeDisabled();
-  expect(screen.getByRole('button',{name:'工作台'})).toBeDisabled();
+  expect(screen.getByRole('button',{name:'首页'})).toBeDisabled();
   expect(screen.getByRole('button',{name:'添加品牌'})).toBeDisabled();
   expect(screen.getByRole('button',{name:'保存模型配置'})).toBeDisabled();
   expect(screen.getByRole('button',{name:'选择 CNVP JSON 导出文件'})).toBeDisabled();
   await act(async()=>{if(outcome==='cancel')settle(null);else reject(new Error('口令不正确或备份已损坏'));});
   expect(await screen.findByText(outcome==='cancel'?'已取消恢复，工作区未替换':'口令不正确或备份已损坏')).toBeInTheDocument();
-  expect(screen.getByRole('button',{name:'工作台'})).toBeEnabled();
+  expect(screen.getByRole('button',{name:'首页'})).toBeEnabled();
   expect(screen.getByRole('button',{name:'保存模型配置'})).toBeEnabled();
   expect(screen.getByLabelText('当前品牌')).toHaveValue('a');
   expect(brandReads).toBe(1);
@@ -193,7 +193,7 @@ describe('M- GEO workspace',()=>{
   fireEvent.click(screen.getByRole('button',{name:'创建品牌'}));
   expect(screen.getByRole('button',{name:'选择备份并恢复'})).toBeDisabled();
   await act(async()=>{finishCreate({id:'created',name:'新品牌',createdAt:''});});
-  expect(await screen.findByText('今天，从准确的资料开始')).toBeInTheDocument();
+  expect(await screen.findByText('让 AI 准确理解你的商品')).toBeInTheDocument();
  });
  it.each(['brand.list','workspace.snapshot'])('can restore a backup when the initial %s read fails',async(failedAction)=>{
   let restored=false;
@@ -210,7 +210,7 @@ describe('M- GEO workspace',()=>{
   fireEvent.click(screen.getByLabelText('我确认用所选备份替换当前整个工作区'));
   fireEvent.click(screen.getByRole('button',{name:'选择备份并恢复'}));
   expect(await screen.findByRole('option',{name:'已恢复品牌'})).toBeInTheDocument();
-  expect(await screen.findByText('今天，从准确的资料开始')).toBeInTheDocument();
+  expect(await screen.findByText('让 AI 准确理解你的商品')).toBeInTheDocument();
   expect(screen.queryByText('本地资料格式损坏，请从备份恢复')).not.toBeInTheDocument();
  });
 });

@@ -338,7 +338,7 @@ mod tests {
             input["drafts"][0]["id"].as_str().unwrap(),
         )
         .unwrap();
-        let updated = handle(&mut c,"draft.save",json!({"brandId":b,"id":d["id"],"expectedRevision":d["revision"],"title":d["title"],"body":"Fictional edited description"})).unwrap();
+        let updated = handle(&mut c,"draft.save",json!({"brandId":b,"id":d["id"],"expectedRevision":d["revision"],"title":d["title"],"body":"Fictional edited description","claims":[{"id":id(),"text":"Fictional edited description","factId":d["claims"][0]["factId"]}]})).unwrap();
         assert!(prepare(&c, &b, &input).is_err());
         input["drafts"][0]["expectedRevision"] = updated["revision"].clone();
         assert!(prepare(&c, &b, &input).is_err());
@@ -364,8 +364,12 @@ mod tests {
         let mut product = load(&c, "m_products", &b, d["productId"].as_str().unwrap()).unwrap();
         product["expectedRevision"] = product["revision"].clone();
         product["facts"][0]["value"] = json!("Fictional Other Maker");
-        let changed = handle(&mut c, "product.save", product).unwrap();
+        let mut changed = handle(&mut c, "product.save", product).unwrap();
         assert!(prepare(&c, &b, &input).is_err());
+        assert_eq!(changed["facts"][0]["reviewStatus"], "pending");
+        changed["expectedRevision"] = changed["revision"].clone();
+        changed["facts"][0]["reviewStatus"] = json!("approved");
+        let changed = handle(&mut c, "product.save", changed).unwrap();
         handle(
             &mut c,
             "product.confirm",

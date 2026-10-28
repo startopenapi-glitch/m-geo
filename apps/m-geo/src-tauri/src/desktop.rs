@@ -17,6 +17,7 @@ use tauri::Manager;
 
 struct AppState {
     db: Arc<Mutex<Connection>>,
+    _offline_worker: crate::offline_worker::OfflineWorkflowWorker,
     site_inspection: Arc<Mutex<SiteInspectionSession>>,
     experiment_inspection: Arc<Mutex<ExperimentInspectionSession>>,
     attribution_inspection: Arc<Mutex<AttributionInspectionSession>>,
@@ -61,6 +62,24 @@ async fn dispatch(
     action: String,
     payload: Value,
 ) -> Result<Value, String> {
+    if action == "publication.readback" {
+        let publication = {
+            let db = state.db.lock().map_err(|_| "资料库暂不可用".to_string())?;
+            crate::core::publication_for_readback(&db, &payload)?
+        };
+        // Network I/O never runs while holding the SQLite lock or a transaction.
+        let result = crate::core::fetch_publication(&publication).await?;
+        let db = state.db.clone();
+        return tauri::async_runtime::spawn_blocking(move || {
+            runtime::core_dispatch(
+                &mut *db.lock().map_err(|_| "资料库暂不可用".to_string())?,
+                "publication.recordReadback",
+                serde_json::json!({"brandId":publication["brandId"],"id":publication["id"],"result":result}),
+            )
+        })
+        .await
+        .map_err(|_| "公开 URL 回读结果保存中断".to_string())?;
+    }
     if runtime::CORE_ACTIONS.contains(&action.as_str()) {
         let db = state.db.clone();
         return tauri::async_runtime::spawn_blocking(move || {
@@ -518,11 +537,20 @@ async fn dispatch(
         "file.exportAttribution"
         | "file.exportAttributionTemplate"
         | "file.exportLocalJob"
-        | "file.exportOptimization" => {
+        | "file.exportOptimization"
+        | "file.exportOfflineWorkflow"
+        | "file.exportP0Workflow" => {
             let (core_action, filename) = if action == "file.exportAttribution" {
                 ("attribution.report", "M-GEO-local-attribution-report.zip")
             } else if action == "file.exportOptimization" {
                 ("optimization.export", "M-GEO-optimization-plan.zip")
+            } else if action == "file.exportP0Workflow" {
+                ("p0Workflow.export", "M-GEO-p0-rehearsal-simulated.zip")
+            } else if action == "file.exportOfflineWorkflow" {
+                (
+                    "offlineWorkflow.export",
+                    "M-GEO-offline-workflow-simulated.zip",
+                )
             } else if action == "file.exportLocalJob" {
                 ("localJobs.export", "M-GEO-local-import-job.zip")
             } else {
@@ -705,8 +733,12 @@ pub fn run() {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
             }
+            let db = Arc::new(Mutex::new(db));
+            let offline_worker = crate::offline_worker::OfflineWorkflowWorker::start(db.clone())
+                .map_err(std::io::Error::other)?;
             app.manage(AppState {
-                db: Arc::new(Mutex::new(db)),
+                db,
+                _offline_worker: offline_worker,
                 site_inspection: Arc::new(Mutex::new(SiteInspectionSession::default())),
                 experiment_inspection: Arc::new(Mutex::new(ExperimentInspectionSession::default())),
                 attribution_inspection: Arc::new(Mutex::new(

@@ -10,7 +10,7 @@ it('prepares without saving and invalidates on data changes',async()=>{
  const actions:string[]=[];
  setTestTransport(async <T,>(action:string)=>{actions.push(action);return {token:'t',products:[],candidates:[{productId:'p',text:'如何选水杯？',intent:'selection'}]} as T});
  const view=render(<TrialPreparation {...props}/>);
- fireEvent.click(screen.getByRole('checkbox'));
+ fireEvent.click(screen.getByRole('checkbox',{name:/虚构水杯/}));
  fireEvent.click(screen.getByText('准备试点资料'));
  await screen.findByText('如何选水杯？');
  expect(actions).toEqual(['pilot.prepare']);
@@ -22,7 +22,7 @@ it('uses reload-only recovery after saving',async()=>{
  const actions:string[]=[];let failures=1;
  setTestTransport(async <T,>(action:string)=>{actions.push(action);return (action==='pilot.createQuestions'?{created:10,skipped:0,questions:[]}:{token:'t',products:[],candidates:[]}) as T});
  render(<TrialPreparation {...props} refresh={async()=>{if(failures--)throw Error('refresh')}}/>);
- fireEvent.click(screen.getByRole('checkbox'));fireEvent.click(screen.getByText('准备试点资料'));
+ fireEvent.click(screen.getByRole('checkbox',{name:/虚构水杯/}));fireEvent.click(screen.getByText('准备试点资料'));
  await waitFor(()=>expect(screen.getByText('保存候选问题（未确认）')).toBeEnabled());
  fireEvent.click(screen.getByText('保存候选问题（未确认）'));
  await screen.findByText('重新加载资料');fireEvent.click(screen.getByText('重新加载资料'));
@@ -33,7 +33,7 @@ it('ignores a late preparation response after a data revision',async()=>{
  let finish!:(value:unknown)=>void;
  setTestTransport(async <T,>()=>await new Promise<T>(resolve=>{finish=value=>resolve(value as T)}));
  const view=render(<TrialPreparation {...props}/>);
- fireEvent.click(screen.getByRole('checkbox'));fireEvent.click(screen.getByText('准备试点资料'));
+ fireEvent.click(screen.getByRole('checkbox',{name:/虚构水杯/}));fireEvent.click(screen.getByText('准备试点资料'));
  view.rerender(<TrialPreparation {...props} data={{...props.data,products:[{...product,revision:2}]}}/>);
  finish({token:'old',products:[],candidates:[{productId:'p',text:'过时结果',intent:'selection'}]});
  await waitFor(()=>expect(screen.getByText('准备试点资料')).toBeEnabled());
@@ -48,7 +48,7 @@ it('reports skipped confirmed candidates without relabelling them unconfirmed',a
   return {token:'t',products:[],candidates:[]} as T;
  });
  render(<TrialPreparation {...props} refresh={refresh}/>);
- fireEvent.click(screen.getByRole('checkbox'));
+ fireEvent.click(screen.getByRole('checkbox',{name:/虚构水杯/}));
  fireEvent.click(screen.getByText('准备试点资料'));
  await waitFor(()=>expect(screen.getByText('保存候选问题（未确认）')).toBeEnabled());
  fireEvent.click(screen.getByText('保存候选问题（未确认）'));
