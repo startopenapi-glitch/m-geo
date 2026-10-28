@@ -4,7 +4,7 @@ import SiteExport from './SiteExport';
 import {call} from '../api';
 import type {PageProps} from '../App';
 vi.mock('../api',()=>({call:vi.fn()}));
-const props={brand:{id:'b',name:'虚构',createdAt:''},data:{products:[{id:'p',brandId:'b',name:'虚构',sku:'X',facts:[{id:'f',label:'容量',value:'1',source:'虚构依据',visibility:'public',validUntil:null}],revision:1,confirmedAt:'2026-10-23',updatedAt:''}],questions:[],observations:[],publications:[],drafts:[{id:'d',brandId:'b',productId:'p',questionId:null,kind:'faq',title:'虚构 FAQ',body:'正文',sourceRevision:1,revision:2,reviewedAt:'2026-10-23',createdAt:''}]},refresh:async()=>{}} as unknown as PageProps;
+const props={brand:{id:'b',name:'虚构',createdAt:''},data:{products:[{id:'p',brandId:'b',name:'虚构',sku:'X',facts:[{id:'f',label:'容量',value:'1',source:'虚构依据',visibility:'public',validUntil:null}],revision:1,confirmedAt:'2026-10-23',updatedAt:''}],questions:[],observations:[],publications:[],drafts:[{id:'d',brandId:'b',productId:'p',questionId:null,kind:'faq',title:'虚构 FAQ',body:'正文',claims:[{id:'c',text:'正文',factId:'f'}],sourceRevision:1,revision:2,reviewedAt:'2026-10-23',createdAt:''}]},refresh:async()=>{}} as unknown as PageProps;
 it('invalidates readiness after input edits and a changed workspace',async()=>{
  vi.mocked(call).mockResolvedValue({previewOnly:true,productCount:1,files:[],readiness:{warnings:6,blockers:1,checks:[{code:'domain',status:'blocked',message:'缺少官网地址'}]}});
  const view=render(<SiteExport {...props}/>);fireEvent.click(screen.getByRole('checkbox'));fireEvent.click(screen.getByText('检查网站内容包'));await screen.findByLabelText('本地完整性检查');

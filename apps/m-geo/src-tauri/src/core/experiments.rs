@@ -146,8 +146,13 @@ pub(super) fn assessment_with_plan(o: &Value, plan: Option<&Value>) -> Result<Va
             .iter()
             .find(|q| q["id"] == o["questionId"] && q["productId"] == o["productId"])
             .ok_or("问题不在此固定测试计划中")?;
+        let real_api = o["surface"] == "api"
+            && o["evidenceMode"] == "recorded"
+            && o["sourceKind"] == "real_api"
+            && o["transport"] == "real_api";
         if repetition > number(plan, "repetitions")?
-            || o["surface"] != "consumer"
+            || (o["surface"] != "consumer" && !real_api)
+            || (real_api && evidence_mode(plan)? != "recorded")
             || !plan["platforms"]
                 .as_array()
                 .ok_or("计划平台损坏")?

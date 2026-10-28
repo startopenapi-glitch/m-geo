@@ -3,7 +3,7 @@ import {afterEach,expect,it} from 'vitest';
 import {setTestTransport} from '../api';
 import type {WorkspaceSnapshot} from '../types';
 import FeedWorkbench from './FeedWorkbench';
-const data:WorkspaceSnapshot={products:[{id:'p',brandId:'b',name:'虚构台灯',sku:'TEST',category:'灯',officialUrl:'',sourceText:'',privateNotes:'',facts:[],revision:1,confirmedAt:'2026-10-23',updatedAt:''}],drafts:[{id:'d',brandId:'b',productId:'p',questionId:null,kind:'description',title:'已审核介绍',body:'虚构介绍',sourceRevision:1,revision:2,generationMode:'local',reviewedAt:'2026-10-23',createdAt:''}],questions:[],publications:[],observations:[]};
+const data:WorkspaceSnapshot={products:[{id:'p',brandId:'b',name:'虚构台灯',sku:'TEST',category:'灯',officialUrl:'',sourceText:'',privateNotes:'',facts:[{id:'f',label:'参数',value:'虚构值',source:'虚构依据',visibility:'public',validUntil:null}],revision:1,confirmedAt:'2026-10-23',updatedAt:''}],drafts:[{id:'d',brandId:'b',productId:'p',questionId:null,kind:'description',title:'已审核介绍',body:'虚构介绍',claims:[{id:'c',text:'虚构介绍',factId:'f'}],sourceRevision:1,revision:2,generationMode:'local',reviewedAt:'2026-10-23',createdAt:''}],questions:[],publications:[],observations:[]};
 const result={manifest:{},packageId:'package',summary:{selected:1,ready:0,blocked:1},rows:[{productId:'p',sku:'TEST',localStatus:'blocked',issues:[{field:'price',code:'missing',message:'价格待补充'}]}],externalChecks:['待核实资格'],files:[{path:'report.json',content:'{}'}]};
 afterEach(()=>{cleanup();setTestTransport(undefined)});
 function select(){fireEvent.click(screen.getByRole('checkbox',{name:/虚构台灯/}));fireEvent.change(screen.getByLabelText('虚构台灯的已审核介绍'),{target:{value:'d'}})}

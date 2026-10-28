@@ -3,6 +3,19 @@ use super::*;
 use experiment_evidence::shape;
 use std::collections::BTreeMap;
 const INVALID: &str = "实验包证据无效、归属不符或超过处理上限";
+const BRAND_MISMATCH: &str = "实验包与当前品牌不匹配，请切换到导出时的品牌后重试";
+const EVIDENCE_INVALID: &str = "实验包原始证据未通过校验，可能已被修改；请使用未修改的原始导出包";
+const LIMIT_EXCEEDED: &str = "实验包超过处理上限，请减少固定问题、平台、轮次或样本后重新导出";
+fn public_error(error: String) -> String {
+    match error.as_str() {
+        BRAND_MISMATCH => BRAND_MISMATCH.into(),
+        "轮次超出范围" | "样本数超出范围" | "样本过大" | "样本证据超过处理预算" => {
+            LIMIT_EXCEEDED.into()
+        }
+        INVALID => EVIDENCE_INVALID.into(),
+        _ => format!("{EVIDENCE_INVALID}：{error}"),
+    }
+}
 const CAVEAT:&str="本地文件一致性不证明来源真实、平台认证、因果改善或 AI 首页排名。人工实测记录由用户录入，未经独立平台来源验证；哈希不等于数字签名。";
 const CHECKS: [(&str, &str); 5] = [
     ("evidence_schema", "冻结证据结构、身份与资源范围核对"),
@@ -199,6 +212,9 @@ fn inspect(brand_id: &str, p: &Value) -> Result<InspectedExperiment> {
     }
     let supplied = &evidence["summary"];
     let plan = &supplied["campaign"];
+    if plan["brandId"].as_str().is_some_and(|id| id != brand_id) {
+        return Err(BRAND_MISMATCH.into());
+    }
     let expected = experiment_evidence::plan(plan, brand_id)?;
     let current = profile(supplied)?;
     let observations = evidence["observations"].as_array().ok_or(INVALID)?;
@@ -222,7 +238,7 @@ fn inspect(brand_id: &str, p: &Value) -> Result<InspectedExperiment> {
 }
 /// Inspect a bounded decoded package using only its frozen records and active brand identity.
 pub fn inspect_experiment_report(brand_id: &str, package: &Value) -> Result<InspectedExperiment> {
-    inspect(brand_id, package).map_err(|_| INVALID.into())
+    inspect(brand_id, package).map_err(public_error)
 }
 fn validate_report(report: &Value) -> Result<()> {
     shape(

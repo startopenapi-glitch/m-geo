@@ -20,8 +20,8 @@ function install(override:(action:string,p:Record<string,unknown>)=>unknown){
   throw Error(action);
  });
 }
-async function enter(){render(<App/>);await screen.findByText('今天，从准确的资料开始');fireEvent.click(screen.getByRole('button',{name:'商品通道'}));await screen.findByRole('heading',{name:'历史商品通道操作 ZIP 复核'});}
-function attemptReplacement(){fireEvent.change(screen.getByLabelText('当前品牌'),{target:{value:brandB}});fireEvent.click(screen.getByRole('button',{name:'添加品牌'}));fireEvent.click(screen.getByRole('button',{name:'工作台'}));}
+async function enter(){render(<App/>);await screen.findByText('让 AI 准确理解你的商品');fireEvent.click(screen.getByRole('button',{name:'事实与证据'}));fireEvent.click(screen.getByRole('button',{name:'渠道资料'}));await screen.findByRole('heading',{name:'历史商品通道操作 ZIP 复核'});}
+function attemptReplacement(){fireEvent.change(screen.getByLabelText('当前品牌'),{target:{value:brandB}});fireEvent.click(screen.getByRole('button',{name:'添加品牌'}));fireEvent.click(screen.getByRole('button',{name:'首页'}));}
 function expectLocked(){
  expect(screen.getByLabelText('当前品牌')).toBeDisabled();expect(screen.getByLabelText('当前品牌')).toHaveValue(brandA);
  expect(screen.getByRole('button',{name:'添加品牌'})).toBeDisabled();for(const b of within(screen.getByRole('navigation',{name:'主要导航'})).getAllByRole('button'))expect(b).toBeDisabled();
@@ -29,9 +29,9 @@ function expectLocked(){
  expect(screen.getByText(/等待.*本地.*读取或保存.*文件.*取消/)).toBeInTheDocument();
 }
 async function expectReleased(){
- expect(screen.getByLabelText('当前品牌')).toBeEnabled();expect(screen.getByRole('button',{name:'添加品牌'})).toBeEnabled();expect(screen.getByRole('button',{name:'工作台'})).toBeEnabled();
+ expect(screen.getByLabelText('当前品牌')).toBeEnabled();expect(screen.getByRole('button',{name:'添加品牌'})).toBeEnabled();expect(screen.getByRole('button',{name:'首页'})).toBeEnabled();
  fireEvent.change(screen.getByLabelText('当前品牌'),{target:{value:brandB}});await screen.findByText('尚未选择历史通道 ZIP。');expect(screen.getByLabelText('当前品牌')).toHaveValue(brandB);expect(screen.queryByText('fictional.zip')).toBeNull();
- fireEvent.click(screen.getByRole('button',{name:'工作台'}));await screen.findByText('今天，从准确的资料开始');
+ fireEvent.click(screen.getByRole('button',{name:'首页'}));await screen.findByText('让 AI 准确理解你的商品');
 }
 it.each(['cancel','success','failure'] as const)('locks App context throughout native select and first page until %s settles',async outcome=>{
  const pending=deferred<ChannelInspectionSelection|null>(),firstPage=deferred<ChannelInspectionPage>();
@@ -67,21 +67,21 @@ it('keeps the active history context when an earlier brand creation finishes, th
  const creating=deferred<{id:string;name:string;createdAt:string}>(),historical=deferred<ChannelInspectionSelection|null>();
  const created={id:'00000000-0000-4000-8000-000000000004',name:'新建虚构品牌',createdAt:''};
  install(action=>action==='brand.create'?creating.promise:action==='file.inspectChannelReport'?historical.promise:undefined);
- render(<App/>);await screen.findByText('今天，从准确的资料开始');
+ render(<App/>);await screen.findByText('让 AI 准确理解你的商品');
  fireEvent.click(screen.getByRole('button',{name:'添加品牌'}));
  fireEvent.change(screen.getByLabelText('品牌名称'),{target:{value:created.name}});
  fireEvent.click(screen.getByRole('button',{name:'创建品牌'}));
  // Abandon the pending create form and enter a valid existing brand's history.
  fireEvent.change(screen.getByLabelText('当前品牌'),{target:{value:brandB}});
- await screen.findByText('今天，从准确的资料开始');
- fireEvent.click(screen.getByRole('button',{name:'商品通道'}));
+ await screen.findByText('让 AI 准确理解你的商品');
+ fireEvent.click(screen.getByRole('button',{name:'事实与证据'}));fireEvent.click(screen.getByRole('button',{name:'渠道资料'}));
  await screen.findByRole('heading',{name:'历史商品通道操作 ZIP 复核'});
  fireEvent.click(screen.getByRole('button',{name:'选择历史通道 ZIP'}));
  await act(async()=>creating.resolve(created));
  expect(screen.getByRole('option',{name:created.name})).toBeInTheDocument();
  expect(screen.getByLabelText('当前品牌')).toHaveValue(brandB);
  expect(screen.getByLabelText('当前品牌')).toBeDisabled();
- expect(screen.getByRole('button',{name:'商品通道'})).toHaveAttribute('aria-current','page');
+ expect(screen.getByRole('button',{name:'渠道资料'})).toHaveAttribute('aria-current','page');
  expect(screen.getByRole('heading',{name:'历史商品通道操作 ZIP 复核'})).toBeInTheDocument();
  expect(screen.getByRole('button',{name:'选择历史通道 ZIP'})).toBeDisabled();
  await act(async()=>historical.resolve(null));
@@ -90,5 +90,5 @@ it('keeps the active history context when an earlier brand creation finishes, th
  fireEvent.change(screen.getByLabelText('当前品牌'),{target:{value:created.id}});
  await screen.findByText('尚未选择历史通道 ZIP。');
  expect(screen.getByLabelText('当前品牌')).toHaveValue(created.id);
- expect(screen.getByRole('button',{name:'商品通道'})).toHaveAttribute('aria-current','page');
+ expect(screen.getByRole('button',{name:'渠道资料'})).toHaveAttribute('aria-current','page');
 });

@@ -8,7 +8,7 @@ import Settings from './Settings';
 import Visibility from './Visibility';
 const brand:Brand={id:'a',name:'晴山',createdAt:''};
 const product:Product={id:'p',brandId:'a',name:'晴山水杯',sku:'CUP-01',category:'水杯',officialUrl:'https://example.com',sourceText:'RAW PRIVATE',privateNotes:'INTERNAL ONLY',facts:[{id:'f',label:'容量',value:'500ml',source:'官方规格',visibility:'public',validUntil:null}],revision:2,confirmedAt:'2026-10-17T00:00:00Z',updatedAt:''};
-const draft:Draft={id:'d',brandId:'a',productId:'p',questionId:null,kind:'description',title:'晴山水杯介绍',body:'容量 500ml。依据：官方规格',sourceRevision:2,revision:3,generationMode:'local',reviewedAt:'2026-10-17T00:00:00Z',createdAt:'2026-10-17T00:00:00Z'};
+const draft:Draft={id:'d',brandId:'a',productId:'p',questionId:null,kind:'description',title:'晴山水杯介绍',body:'容量 500ml。依据：官方规格',claims:[{id:'c',text:'容量 500ml。',factId:'f'}],sourceRevision:2,revision:3,generationMode:'local',reviewedAt:'2026-10-17T00:00:00Z',createdAt:'2026-10-17T00:00:00Z'};
 const base:WorkspaceSnapshot={products:[product],questions:[],drafts:[],publications:[],observations:[]};
 const props={brand,data:base,refresh:vi.fn(async()=>{})};
 afterEach(()=>{cleanup();setTestTransport(undefined);vi.clearAllMocks()});

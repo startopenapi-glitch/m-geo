@@ -169,7 +169,7 @@ fn phase9_fictional_repair_queue_report_and_reopen() {
     let bytes = crate::backup::encrypt_snapshot(&db, "fictional-phase9-only").unwrap();
     assert_eq!(
         crate::backup::inspect_snapshot(&bytes, "fictional-phase9-only").unwrap()["targetVersion"],
-        5
+        10
     );
     let restored_path = temp.path().join("restored.sqlite3");
     let mut restored = crate::runtime::open_database(&restored_path).unwrap();
@@ -242,12 +242,12 @@ fn phase9_actual_phase8_schema5_copy_is_unchanged() {
         opened
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        5
+        7
     );
     assert_eq!(rows(&prior), rows(&opened));
     let bytes = crate::backup::encrypt_snapshot(&opened, "phase9-legacy-only").unwrap();
     assert_eq!(
         crate::backup::inspect_snapshot(&bytes, "phase9-legacy-only").unwrap()["targetVersion"],
-        5
+        10
     );
 }

@@ -281,15 +281,35 @@ fn structure(files: &BTreeMap<String, String>) -> Result<(Value, Value)> {
             return Err(fail());
         }
         for f in facts {
-            if !shape(
+            let legacy = shape(
                 f,
                 &["id", "label", "value", "source", "visibility", "validUntil"],
-            ) || !string(&f["id"], 100, true)
+            );
+            let reviewed = shape(
+                f,
+                &[
+                    "id",
+                    "label",
+                    "value",
+                    "source",
+                    "visibility",
+                    "validUntil",
+                    "reviewStatus",
+                    "reviewedAt",
+                    "updatedAt",
+                ],
+            );
+            if !(legacy || reviewed)
+                || !string(&f["id"], 100, true)
                 || !ids.insert(f["id"].as_str().unwrap())
                 || !string(&f["label"], 200, true)
                 || !string(&f["value"], 3000, true)
                 || !string(&f["source"], 2000, true)
                 || f["visibility"] != "public"
+                || (reviewed
+                    && (f["reviewStatus"] != "approved"
+                        || !timestamp(&f["reviewedAt"])
+                        || !timestamp(&f["updatedAt"])))
                 || !(f["validUntil"].is_null()
                     || f["validUntil"].as_str().is_some_and(|s| {
                         s.len() == 10 && NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()

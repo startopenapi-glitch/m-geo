@@ -42,7 +42,7 @@ pub(crate) fn validate_schema_version(db: &Connection, version: i64) -> Result<(
     let user: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .map_err(error)?;
-    if ![1, 2, 3, 4, 5].contains(&version) || marker != version || user != version {
+    if ![1, 2, 3, 4, 5, 6, 7, 8, 9, 10].contains(&version) || marker != version || user != version {
         return Err("资料版本标记不一致，请使用原版本恢复".into());
     }
     let mut reference = Connection::open_in_memory().map_err(error)?;
@@ -51,7 +51,15 @@ pub(crate) fn validate_schema_version(db: &Connection, version: i64) -> Result<(
     let expected: Vec<_> = schema(&reference)?
         .into_iter()
         .filter(|(_, name, _)| {
-            !(version < 5 && name == "m_optimization_plans"
+            !(version < 10 && name.starts_with("m_p0_")
+                || version < 9 && name.starts_with("m_offline_workflows")
+                || version < 8
+                    && (name.starts_with("m_question_research")
+                        || name.starts_with("m_media")
+                        || name.starts_with("m_automation_tasks"))
+                || version < 7 && name.starts_with("m_assets")
+                || version < 6 && name.starts_with("m_knowledge_")
+                || version < 5 && name == "m_optimization_plans"
                 || version < 4 && name == "m_local_jobs"
                 || version < 3 && name == "m_attribution_datasets"
                 || version < 2 && name == "m_campaigns")
@@ -68,7 +76,7 @@ fn validate_storage(db: &Connection) -> Result<(), String> {
     let version: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .map_err(error)?;
-    if ![1, 2, 3, 4, 5].contains(&version) {
+    if ![1, 2, 3, 4, 5, 6, 7, 8, 9, 10].contains(&version) {
         return Err("数据格式版本不兼容，请使用对应版本的 M- GEO".into());
     }
     let integrity: String = db
@@ -191,9 +199,11 @@ fn prepare_restore(data: &[u8], password: &str) -> Result<PreparedRestore, Strin
     crate::core::validate_database(&source)?;
     crate::core::initialize(&mut source)?;
     source
-        .pragma_update(None, "user_version", 5)
+        .pragma_update(None, "user_version", 10)
         .map_err(error)?;
     crate::core::validate_database(&source)?;
+    crate::core::recover_offline_workflows(&mut source)?;
+    crate::core::recover_p0_workflows(&mut source)?;
     for table in ["ai_settings", "ai_jobs", "m_ai_preparations"] {
         let count: i64 = source
             .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
@@ -224,6 +234,14 @@ pub fn inspect_snapshot(data: &[u8], password: &str) -> Result<serde_json::Value
         ("datasets", "m_attribution_datasets"),
         ("localJobs", "m_local_jobs"),
         ("optimizationPlans", "m_optimization_plans"),
+        ("knowledgeDocuments", "m_knowledge_documents"),
+        ("knowledgeReviews", "m_knowledge_reviews"),
+        ("assets", "m_assets"),
+        ("questionResearch", "m_question_research"),
+        ("media", "m_media"),
+        ("automationTasks", "m_automation_tasks"),
+        ("offlineWorkflows", "m_offline_workflows"),
+        ("p0Workflows", "m_p0_workflows"),
     ] {
         let count: i64 = prepared
             .source
@@ -232,10 +250,11 @@ pub fn inspect_snapshot(data: &[u8], password: &str) -> Result<serde_json::Value
         counts.insert(key.into(), serde_json::json!(count));
     }
     Ok(
-        serde_json::json!({"valid":true,"sourceVersion":prepared.source_version,"targetVersion":5,"counts":counts,"workspaceUnchanged":true}),
+        serde_json::json!({"valid":true,"sourceVersion":prepared.source_version,"targetVersion":10,"counts":counts,"workspaceUnchanged":true}),
     )
 }
 pub fn restore_snapshot(db: &mut Connection, data: &[u8], password: &str) -> Result<(), String> {
+    crate::runtime::no_active_jobs(db)?;
     let prepared = prepare_restore(data, password)?;
     apply_restore(db, &prepared)
 }
@@ -280,7 +299,7 @@ mod tests {
         let result = inspect_snapshot(&bytes, "my-safe-passphrase").unwrap();
         assert_eq!(result["valid"], true);
         assert_eq!(result["sourceVersion"], version);
-        assert_eq!(result["targetVersion"], 5);
+        assert_eq!(result["targetVersion"], 10);
         assert_eq!(result["counts"]["brands"], 1);
         assert_eq!(result["counts"]["localJobs"], 0);
         assert_eq!(result["workspaceUnchanged"], true);
@@ -364,7 +383,7 @@ mod tests {
         data[last] ^= 1;
         let mut target = sample();
         assert!(restore_snapshot(&mut target, &data, "my-safe-passphrase").is_err());
-        original.pragma_update(None, "user_version", 900).unwrap();
+        original.pragma_update(None, "user_version", 1000).unwrap();
         assert!(encrypt_snapshot(&original, "my-safe-passphrase").is_err());
     }
     #[test]
@@ -607,6 +626,94 @@ mod tests {
             0
         );
     }
+    #[test]
+    fn schema8_media_research_and_automation_roundtrip_with_readback() {
+        use crate::core::handle;
+        let mut source = crate::runtime::open_database(std::path::Path::new(":memory:")).unwrap();
+        let brand = handle(
+            &mut source,
+            "brand.create",
+            json!({"name":"虚构 schema8 备份品牌"}),
+        )
+        .unwrap();
+        let product = handle(
+            &mut source,
+            "product.save",
+            json!({"brandId":brand["id"],"name":"虚构备份商品","sku":"SCHEMA8-BACKUP","facts":[]}),
+        )
+        .unwrap();
+        let research = handle(&mut source, "research.save", json!({
+            "brandId":brand["id"],"productId":product["id"],"question":"虚构备份商品如何保养？",
+            "intent":"usage","sourceKind":"manual","sourceLabel":"虚构备份访谈",
+            "sourceUrl":"https://example.com/schema8-research","observedAt":"2026-10-24T01:00:00Z","clusterKey":"备份验收"
+        })).unwrap();
+        let media = handle(
+            &mut source,
+            "media.import",
+            json!({
+                "brandId":brand["id"],"filename":"fictional.png","mime":"image/png",
+                "data":"iVBORw0KGgo=","alt":"虚构备份图片","caption":"仅测试",
+                "source":"虚构自有素材","rightsNote":"虚构测试授权"
+            }),
+        )
+        .unwrap();
+        let task = handle(
+            &mut source,
+            "automation.create",
+            json!({
+                "brandId":brand["id"],"requestId":"90000000-0000-4000-8000-000000000081",
+                "name":"虚构 schema8 只读任务","intervalMinutes":60,
+                "nodes":[{"id":"facts","kind":"fact_expiry_scan","dependsOn":[]}]
+            }),
+        )
+        .unwrap();
+
+        let bytes = encrypt_snapshot(&source, "schema8-fictional-backup").unwrap();
+        let inspected = inspect_snapshot(&bytes, "schema8-fictional-backup").unwrap();
+        assert_eq!(inspected["sourceVersion"], 10);
+        assert_eq!(inspected["targetVersion"], 10);
+        assert_eq!(inspected["counts"]["questionResearch"], 1);
+        assert_eq!(inspected["counts"]["media"], 1);
+        assert_eq!(inspected["counts"]["automationTasks"], 1);
+
+        let mut restored = crate::runtime::open_database(std::path::Path::new(":memory:")).unwrap();
+        restore_snapshot(&mut restored, &bytes, "schema8-fictional-backup").unwrap();
+        crate::core::validate_database(&restored).unwrap();
+        let research_after = handle(
+            &mut restored,
+            "research.list",
+            json!({"brandId":brand["id"]}),
+        )
+        .unwrap();
+        assert_eq!(research_after["items"], json!([research]));
+        let media_after = handle(
+            &mut restored,
+            "media.get",
+            json!({"brandId":brand["id"],"id":media["id"]}),
+        )
+        .unwrap();
+        assert_eq!(media_after["data"], "iVBORw0KGgo=");
+        assert_eq!(media_after["sha256"], media["sha256"]);
+        assert_eq!(media_after["size"], 8);
+        let blob = restored
+            .query_row(
+                "SELECT blob FROM m_media WHERE id=?1",
+                [media["id"].as_str()],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .unwrap();
+        assert_eq!(blob, b"\x89PNG\r\n\x1a\n");
+        let tasks_after = handle(
+            &mut restored,
+            "automation.list",
+            json!({"brandId":brand["id"]}),
+        )
+        .unwrap();
+        assert_eq!(tasks_after["tasks"][0]["id"], task["id"]);
+        assert_eq!(tasks_after["tasks"][0]["requestId"], task["requestId"]);
+        assert_eq!(tasks_after["tasks"][0]["reports"], json!([]));
+    }
+
     #[test]
     fn insufficient_destination_capacity_rolls_back_and_survives_reopen() {
         let mut source = sample();

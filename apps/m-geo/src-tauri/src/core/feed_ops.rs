@@ -444,7 +444,7 @@ mod tests {
                 json!({"brandId":b,"productId":prod["id"],"kind":"description"}),
             )
             .unwrap();
-            let d=handle(&mut c,"draft.save",json!({"brandId":b,"id":d["id"],"expectedRevision":d["revision"],"title":"虚构商品说明","body":body})).unwrap();
+            let d=handle(&mut c,"draft.save",json!({"brandId":b,"id":d["id"],"expectedRevision":d["revision"],"title":"虚构商品说明","body":body,"claims":[{"id":id(),"text":if body.contains("quoted:"){"quoted: \"fictional\""}else{body},"factId":"catalog:kind"}]})).unwrap();
             let d = handle(
                 &mut c,
                 "draft.review",
@@ -469,6 +469,10 @@ mod tests {
         prod["expectedRevision"] = prod["revision"].clone();
         prod["facts"][6]["value"] = json!("39.90");
         prod["facts"][6]["validUntil"] = json!("2099-02-01");
+        let mut prod = handle(c, "product.save", prod).unwrap();
+        assert_eq!(prod["facts"][6]["reviewStatus"], "pending");
+        prod["expectedRevision"] = prod["revision"].clone();
+        prod["facts"][6]["reviewStatus"] = json!("approved");
         let prod = handle(c, "product.save", prod).unwrap();
         handle(
             c,
@@ -482,7 +486,7 @@ mod tests {
             json!({"brandId":b,"productId":prod["id"],"kind":"description"}),
         )
         .unwrap();
-        let d=handle(c,"draft.save",json!({"brandId":b,"id":d["id"],"expectedRevision":d["revision"],"title":"虚构新商品说明","body":"价格更新后经过本地审核的虚构商品说明"})).unwrap();
+        let d=handle(c,"draft.save",json!({"brandId":b,"id":d["id"],"expectedRevision":d["revision"],"title":"虚构新商品说明","body":"价格更新后经过本地审核的虚构商品说明","claims":[{"id":id(),"text":"价格更新后经过本地审核的虚构商品说明","factId":"catalog:kind"}]})).unwrap();
         let d = handle(
             c,
             "draft.review",
@@ -613,7 +617,16 @@ mod tests {
             .push(legacy.clone());
         product["expectedRevision"] = product["revision"].clone();
         let mut saved = handle(&mut c, "product.save", product).unwrap();
-        assert!(saved["facts"].as_array().unwrap().contains(&legacy));
+        let saved_legacy = saved["facts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|fact| fact["id"] == legacy["id"])
+            .unwrap();
+        for key in ["label", "value", "source", "visibility", "validUntil"] {
+            assert_eq!(saved_legacy[key], legacy[key]);
+        }
+        assert_eq!(saved_legacy["reviewStatus"], "approved");
         assert!(saved["confirmedAt"].is_null());
         let report = handle(&mut c, "catalog.inspect", json!({"brandId":b})).unwrap();
         assert_eq!(report["summary"]["blocked"], 1);

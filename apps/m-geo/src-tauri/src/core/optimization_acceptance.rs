@@ -5,13 +5,13 @@ fn phase7_schema4_upgrade_and_inspection_keep_old_tables() {
     let path = dir.path().join("fixture.sqlite3");
     let mut c = crate::runtime::open_database(&path).unwrap();
     let b = handle(&mut c, "brand.create", json!({"name":"第七阶段虚构迁移"})).unwrap();
-    c.execute_batch("DROP TABLE IF EXISTS m_optimization_plans; UPDATE m_core_meta SET schema_version=4; PRAGMA user_version=4;").unwrap();
+    c.execute_batch("DROP TABLE IF EXISTS m_p0_workflows; DROP TABLE IF EXISTS m_p0_policy; DROP TABLE IF EXISTS m_offline_workflows; DROP TABLE IF EXISTS m_question_research; DROP TABLE IF EXISTS m_media; DROP TABLE IF EXISTS m_automation_tasks; DROP TABLE IF EXISTS m_assets; DROP TABLE IF EXISTS m_knowledge_reviews; DROP TABLE IF EXISTS m_knowledge_documents; DROP TABLE IF EXISTS m_optimization_plans; UPDATE m_core_meta SET schema_version=4; PRAGMA user_version=4;").unwrap();
     drop(c);
     let c = crate::runtime::open_database(&path).unwrap();
     assert_eq!(
         c.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        5
+        10
     );
     assert_eq!(brand(&c, b["id"].as_str().unwrap()).unwrap(), b);
     assert_eq!(
@@ -29,7 +29,7 @@ fn phase7_schema4_upgrade_and_inspection_keep_old_tables() {
             .starts_with("before-optimization-v5-")));
     let backup = crate::backup::encrypt_snapshot(&c, "fictional-phase7-only").unwrap();
     let checked = crate::backup::inspect_snapshot(&backup, "fictional-phase7-only").unwrap();
-    assert_eq!(checked["targetVersion"], 5);
+    assert_eq!(checked["targetVersion"], 10);
     assert_eq!(checked["counts"]["optimizationPlans"], 0);
 }
 fn setup(c: &mut Connection) -> (String, Vec<Value>, Value) {
@@ -303,7 +303,7 @@ fn phase7_actual_schema4_file_copy_migration() {
     let inspection =
         crate::backup::inspect_snapshot(&old_backup, "fictional-phase7-legacy").unwrap();
     assert_eq!(inspection["sourceVersion"], 4);
-    assert_eq!(inspection["targetVersion"], 5);
+    assert_eq!(inspection["targetVersion"], 10);
     assert_eq!(inspection["counts"]["optimizationPlans"], 0);
     let mut old_restored = crate::runtime::open_database(std::path::Path::new(":memory:")).unwrap();
     crate::backup::restore_snapshot(&mut old_restored, &old_backup, "fictional-phase7-legacy")
@@ -344,7 +344,7 @@ fn phase7_actual_schema4_file_copy_migration() {
         migrated
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        5
+        7
     );
     assert_eq!(
         migrated

@@ -258,6 +258,17 @@ fn validate_legacy(kind: &str, r: &Value) -> Result<()> {
                 old_id(r, "questionId")?;
             }
             choice(r, "kind", &["description", "faq", "guide", "comparison"])?;
+            channels::parse(r, "channel")?;
+            if r.get("channel").is_some_and(|v| !v.is_null()) {
+                if r.get("channelTemplateVersion") != Some(&json!(channels::TEMPLATE_VERSION)) {
+                    return Err("迁移渠道模板版本不受支持".into());
+                }
+            } else if r
+                .get("channelTemplateVersion")
+                .is_some_and(|v| !v.is_null() && *v != json!(0))
+            {
+                return Err("通用稿件的渠道模板版本不正确".into());
+            }
             text(r, "title", 300, true)?;
             raw(r, "body", 30000, true)?;
             number(r, "sourceRevision")?;
@@ -391,10 +402,22 @@ pub(super) fn cnvp(c: &Connection, b: &str, br: &Value, p: &Value) -> Result<Val
         raw(&data, "privateNotes", 30000, false)?;
         facts(&data)?;
         for f in data["facts"].as_array().ok_or("商品事实格式错误")? {
-            keys(
-                f,
-                &["id", "label", "value", "source", "visibility", "validUntil"],
-            )?;
+            let fact_keys: &[&str] = if f.get("reviewStatus").is_none() {
+                &["id", "label", "value", "source", "visibility", "validUntil"]
+            } else {
+                &[
+                    "id",
+                    "label",
+                    "value",
+                    "source",
+                    "visibility",
+                    "validUntil",
+                    "reviewStatus",
+                    "reviewedAt",
+                    "updatedAt",
+                ]
+            };
+            keys(f, fact_keys)?;
         }
         if find_mapping(c, &src, "product", &old, b)?.is_some() {
             skipped += 1;
@@ -512,6 +535,8 @@ pub(super) fn cnvp(c: &Connection, b: &str, br: &Value, p: &Value) -> Result<Val
                 "productId",
                 "questionId",
                 "kind",
+                "channel",
+                "channelTemplateVersion",
                 "title",
                 "body",
                 "sourceRevision",
@@ -564,7 +589,7 @@ pub(super) fn cnvp(c: &Connection, b: &str, br: &Value, p: &Value) -> Result<Val
             skipped += 1;
             continue;
         }
-        let ctx = json!({"brandId":b,"productId":pid,"questionId":qid,"kind":kind,"title":title,"sourceRevision":source_rev});
+        let ctx = json!({"brandId":b,"productId":pid,"questionId":qid,"kind":kind,"channel":row.get("channel").cloned().unwrap_or(Value::Null),"channelTemplateVersion":row.get("channelTemplateVersion").cloned().unwrap_or(json!(0)),"title":title,"sourceRevision":source_rev});
         let mut saved = insert_draft(c, &ctx, &body, &mode)?;
         saved["revision"] = json!(rev);
         saved["createdAt"] = json!(created_at);

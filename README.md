@@ -40,6 +40,10 @@ cargo clippy --locked --manifest-path src-tauri/Cargo.toml --features desktop --
 pnpm tauri dev
 ```
 
+当前分支的 **0.21.0 本地候选**新增 P0 接入演练：请求模式隔离、模拟预算、独立发布批准、模拟 CMS 回执／对账／回滚和静态页面检查，见 [0.21.0 本地候选说明](docs/release-0.21.0.md)。此候选尚未推送或发布 Release，独立验收不改变正式安装。
+
+0.20.0 新增持久本地自动化与模拟证据包，范围和操作说明见 [0.20.0 本地候选说明](docs/release-0.20.0.md)。
+
 完整构建前置条件、平台限制和数据说明见 [应用开发与使用说明](apps/m-geo/README.md)。本地自动化或虚构资料验收不代表远程 CI、平台账号、真实线上发布或消费者推荐效果已经通过。
 
 ## 数据、模型与隐私

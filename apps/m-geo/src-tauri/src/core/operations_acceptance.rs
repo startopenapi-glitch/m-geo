@@ -122,7 +122,7 @@ fn phase6_fictional_csv_queue_reopen_backup_and_bulk_flow() {
     let inspection = crate::backup::inspect_snapshot(&backup, password).unwrap();
     assert_eq!(
         inspection["counts"],
-        json!({"brands":1,"products":3,"datasets":1,"localJobs":1,"optimizationPlans":0})
+        json!({"brands":1,"products":3,"datasets":1,"localJobs":1,"optimizationPlans":0,"knowledgeDocuments":0,"knowledgeReviews":0,"assets":0,"questionResearch":0,"media":0,"automationTasks":0,"offlineWorkflows":0,"p0Workflows":0})
     );
     assert_eq!(c.total_changes(), changes);
     let restored_path = temp.path().join("restored.sqlite3");
@@ -270,7 +270,7 @@ fn phase6_actual_schema3_fictional_file_migration() {
         migrated
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        5
+        7
     );
     assert_eq!(
         migrated
@@ -291,6 +291,6 @@ fn phase6_actual_schema3_fictional_file_migration() {
         1
     );
     if let Ok(path) = std::env::var("MGEO_PHASE6_OUTPUT") {
-        std::fs::write(std::path::Path::new(&path).join("legacy-file-migration.json"),serde_json::to_string_pretty(&json!({"passed":true,"sourceVersion":3,"targetVersion":5,"preservedTables":tables,"preUpgradeSnapshot":true,"sourceReadOnly":true})).unwrap()).unwrap();
+        std::fs::write(std::path::Path::new(&path).join("legacy-file-migration.json"),serde_json::to_string_pretty(&json!({"passed":true,"sourceVersion":3,"targetVersion":7,"preservedTables":tables,"preUpgradeSnapshot":true,"sourceReadOnly":true})).unwrap()).unwrap();
     }
 }
